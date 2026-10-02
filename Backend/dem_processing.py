@@ -1,8 +1,12 @@
 import math, rasterio
+from pathlib import Path
 from shapely.geometry import LineString
 from pyproj import Transformer
 from geographiclib.geodesic import Geodesic
 from config import DEM_PATH, SAMPLE_DISTANCE_M
+
+if not Path(DEM_PATH).exists():
+    raise FileNotFoundError(f"DEM file not found: {DEM_PATH}")
 
 _dem_ds = rasterio.open(DEM_PATH)
 _dem_crs = _dem_ds.crs
