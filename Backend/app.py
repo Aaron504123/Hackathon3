@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import logging
 import requests
+from concurrent.futures import ThreadPoolExecutor
 
 from config import MAPBOX_TOKEN, SAMPLE_DISTANCE_M
 from dem_processing import sample_elevations, compute_slopes
@@ -38,7 +39,7 @@ def route():
         return jsonify({"error": "start/end required"}), 400
 
     try:
-        url = f"{MAPBOX_URL}/{start[1]},{start[0]};{end[1]},{end[0]}"
+        url = f"{MAPBOX_URL}/{start[0]},{start[1]};{end[0]},{end[1]}"
         params = {
             "geometries": "geojson",
             "overview": "full",
@@ -63,7 +64,11 @@ def route():
     lons, lats = [c[0] for c in coords], [c[1] for c in coords]
     pad = 0.0005
     bbox = [min(lats) - pad, min(lons) - pad, max(lats) + pad, max(lons) + pad]
-    bf, op = fetch_barrier_free(bbox), fetch_overpass(bbox)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        barrier_free_future = executor.submit(fetch_barrier_free, bbox)
+        overpass_future = executor.submit(fetch_overpass, bbox)
+        bf = barrier_free_future.result()
+        op = overpass_future.result()
     facilities = normalize(bf, op)
 
     max_slope = max([abs(s["slope_deg"]) for s in segments if s["slope_deg"] is not None], default=None)
