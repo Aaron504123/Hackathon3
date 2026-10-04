@@ -1,5 +1,9 @@
+from unittest.mock import Mock
+
 import pytest
-from app import app, choose_preferred_route, classify_route_obstacles, normalize_route_geometry
+import requests
+import facilities_fetcher
+from app import app, choose_preferred_route, classify_route_obstacles, normalize_route_geometry, _filter_facilities_near_route
 
 @pytest.fixture
 def client():
@@ -43,6 +47,18 @@ def test_classify_route_obstacles_returns_clear_obstacle_summary():
     assert summary["has_step_obstacle"] is True
     assert summary["has_elevator_access"] is True
     assert summary["obstacle_types"] == ["steps", "elevator", "toilet"]
+
+
+def test_facilities_are_limited_to_route_corridor():
+    route = [[114.17, 22.32], [114.18, 22.32]]
+    facilities = [
+        {"name": "Near", "longitude": 114.175, "latitude": 22.3202},
+        {"name": "Far", "longitude": 114.175, "latitude": 22.321},
+    ]
+
+    nearby = _filter_facilities_near_route(facilities, route)
+
+    assert [facility["name"] for facility in nearby] == ["Near"]
 
 
 def test_route_slopes(client):
@@ -96,3 +112,27 @@ def test_route_keeps_ors_route_when_facility_api_fails(client, monkeypatch):
     data = response.get_json()
     assert data["route_source"] == "openrouteservice"
     assert data["warning"] is None
+
+
+def test_fetch_barrier_free_skips_placeholder_api_key(monkeypatch):
+    request = Mock()
+    monkeypatch.setattr(facilities_fetcher, "BARRIER_FREE_API_KEY", "YOUR_BARRIER_FREE_API_KEY")
+    monkeypatch.setattr(facilities_fetcher.requests, "get", request)
+
+    result = facilities_fetcher.fetch_barrier_free((22.2, 113.9, 22.4, 114.2))
+
+    assert result == {}
+    request.assert_not_called()
+
+
+def test_fetch_barrier_free_handles_unauthorized_response(monkeypatch, caplog):
+    response = requests.Response()
+    response.status_code = 401
+    monkeypatch.setattr(facilities_fetcher, "BARRIER_FREE_API_KEY", "invalid-key")
+    monkeypatch.setattr(facilities_fetcher.requests, "get", Mock(return_value=response))
+
+    result = facilities_fetcher.fetch_barrier_free((22.2, 113.9, 22.4, 114.2))
+
+    assert result == {}
+    assert "HTTP 401" in caplog.text
+    assert "Traceback" not in caplog.text

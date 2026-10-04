@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import mapboxgl from 'mapbox-gl'
+import * as OpenCC from 'opencc-js'
 import accessibleToiletIcon from '../../images/Accessible_Toilet.png'
 import stairsMarkerIcon from '../../images/stairs_marker.svg'
 import 'mapbox-gl/dist/mapbox-gl.css'
@@ -14,6 +15,9 @@ const HONG_KONG_BOUNDS = {
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || '/api'
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN || ''
+
+const toTraditionalChinese = OpenCC.Converter({ from: 'cn', to: 'tw' })
+const toSimplifiedChinese = OpenCC.Converter({ from: 'tw', to: 'cn' })
 
 async function fetchWithTimeout(url, options, timeoutMs, serviceName) {
   const controller = new AbortController()
@@ -70,33 +74,43 @@ async function geocodeLocation(query, label) {
     throw new Error(`請輸入${label}地點。`)
   }
 
-  const params = new URLSearchParams({
-    q: query.trim(),
-    lat: '22.32',
-    lon: '114.17',
-    limit: '8',
-    lang: 'en',
-  })
-  const url = `https://photon.komoot.io/api/?${params}`
-  let response
-  try {
-    response = await fetchWithTimeout(url, undefined, 20000, '地點搜尋')
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('逾時')) {
-      throw error
-    }
-    throw new Error('無法連線到地點搜尋服務，請檢查網路連線。')
-  }
-  const payload = await readJsonResponse(response, '地點搜尋服務')
+  const searchQueries = [
+    toTraditionalChinese(query.trim()),
+    query.trim(),
+    toSimplifiedChinese(query.trim()),
+  ].filter((candidate, index, candidates) => candidate && candidates.indexOf(candidate) === index)
 
-  const feature = payload.features?.find((candidate) => {
-    const coordinates = candidate.geometry?.coordinates
-    return Array.isArray(coordinates) && coordinates.length === 2 &&
-      coordinates[0] >= HONG_KONG_BOUNDS.minLng &&
-      coordinates[0] <= HONG_KONG_BOUNDS.maxLng &&
-      coordinates[1] >= HONG_KONG_BOUNDS.minLat &&
-      coordinates[1] <= HONG_KONG_BOUNDS.maxLat
-  })
+  let feature
+  for (const searchQuery of searchQueries) {
+    const params = new URLSearchParams({
+      q: searchQuery,
+      lat: '22.32',
+      lon: '114.17',
+      limit: '8',
+    })
+    const url = `https://photon.komoot.io/api/?${params}`
+    let response
+    try {
+      response = await fetchWithTimeout(url, undefined, 20000, '地點搜尋')
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('逾時')) {
+        throw error
+      }
+      throw new Error('無法連線到地點搜尋服務，請檢查網路連線。')
+    }
+    const payload = await readJsonResponse(response, '地點搜尋服務')
+
+    feature = payload.features?.find((candidate) => {
+      const coordinates = candidate.geometry?.coordinates
+      return Array.isArray(coordinates) && coordinates.length === 2 &&
+        coordinates[0] >= HONG_KONG_BOUNDS.minLng &&
+        coordinates[0] <= HONG_KONG_BOUNDS.maxLng &&
+        coordinates[1] >= HONG_KONG_BOUNDS.minLat &&
+        coordinates[1] <= HONG_KONG_BOUNDS.maxLat
+    })
+    if (feature) break
+  }
+
   if (!feature) {
     throw new Error(`找不到${label}「${query.trim()}」，請嘗試輸入更完整的地點名稱。`)
   }
@@ -215,7 +229,6 @@ function App() {
       layout: {
         'line-cap': 'round',
         'line-join': 'round',
-        'line-simplification': 0.2,
       },
       paint: {
         'line-color': ['case', ['==', ['get', 'slope'], null], '#94a3b8', ['get', 'color']],

@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 import logging
+import math
 import requests
 import polyline
 from concurrent.futures import ThreadPoolExecutor
@@ -14,6 +15,7 @@ logging.basicConfig(level=logging.INFO)
 
 MAPBOX_URL = "https://api.mapbox.com/directions/v5/mapbox/walking"
 ORS_URL = f"{ORS_API_BASE}/v2/directions/{ORS_PROFILE}/json"
+FACILITY_ROUTE_RADIUS_METERS = 40
 
 
 def build_fallback_route(start, end, steps=25):
@@ -39,10 +41,47 @@ def _distance_to_route(route_coords, point):
     if not route_coords:
         return float("inf")
     point_lon, point_lat = point
-    mins = []
-    for route_coord in route_coords:
-        mins.append(_distance_meters(point, route_coord))
-    return min(mins)
+    if len(route_coords) == 1:
+        return _distance_meters(point, route_coords[0])
+
+    longitude_scale = 111320 * math.cos(math.radians(point_lat))
+    latitude_scale = 110574
+    point_segments = []
+    for coordinate in route_coords:
+        point_segments.append((
+            (coordinate[0] - point_lon) * longitude_scale,
+            (coordinate[1] - point_lat) * latitude_scale,
+        ))
+
+    minimum_distance = float("inf")
+    for index in range(len(point_segments) - 1):
+        start_x, start_y = point_segments[index]
+        end_x, end_y = point_segments[index + 1]
+        segment_x = end_x - start_x
+        segment_y = end_y - start_y
+        segment_length_squared = segment_x ** 2 + segment_y ** 2
+        if segment_length_squared:
+            fraction = max(0, min(1, -(start_x * segment_x + start_y * segment_y) / segment_length_squared))
+        else:
+            fraction = 0
+        closest_x = start_x + fraction * segment_x
+        closest_y = start_y + fraction * segment_y
+        distance = math.hypot(closest_x, closest_y)
+        minimum_distance = min(minimum_distance, distance)
+
+    return minimum_distance
+
+
+def _filter_facilities_near_route(facilities, route_coords):
+    nearby_facilities = []
+    for facility in facilities:
+        longitude = facility.get("longitude")
+        latitude = facility.get("latitude")
+        if longitude is None or latitude is None:
+            continue
+        if _distance_to_route(route_coords, [longitude, latitude]) <= FACILITY_ROUTE_RADIUS_METERS:
+            nearby_facilities.append(facility)
+    return nearby_facilities
 
 
 def normalize_route_geometry(route):
@@ -209,7 +248,7 @@ def route():
     lons, lats = [c[0] for c in coords], [c[1] for c in coords]
     pad = 0.0005
     bbox = [min(lats) - pad, min(lons) - pad, max(lats) + pad, max(lons) + pad]
-    facilities = fetch_facilities_nearby(bbox)
+    facilities = _filter_facilities_near_route(fetch_facilities_nearby(bbox), coords)
 
     route_facility_summary = classify_route_obstacles(facilities)
     max_slope = max([abs(s["slope_deg"]) for s in segments if s["slope_deg"] is not None], default=None)

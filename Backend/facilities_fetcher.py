@@ -18,6 +18,10 @@ def _determine_facility_type(tags, fallback="facility"):
 
 
 def fetch_barrier_free(bbox):
+    if not BARRIER_FREE_API_KEY or BARRIER_FREE_API_KEY.strip() == "YOUR_BARRIER_FREE_API_KEY":
+        logger.warning("BARRIER_FREE_API_KEY is not configured; skipping Barrier Free API")
+        return {}
+
     url = f"{BARRIER_FREE_API_BASE}/locations"
     headers = {"Authorization": f"Bearer {BARRIER_FREE_API_KEY}"}
     params = {"bbox": ",".join(map(str,bbox)), "facilityTypes":"elevator,toilet,ramp"}
@@ -25,6 +29,10 @@ def fetch_barrier_free(bbox):
         r = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
         r.raise_for_status()
         return r.json()
+    except requests.HTTPError as error:
+        status_code = error.response.status_code if error.response is not None else "unknown"
+        logger.warning("Barrier Free API request failed (HTTP %s); continuing without this source", status_code)
+        return {}
     except Exception:
         logger.exception("Barrier Free error")
         return {}
