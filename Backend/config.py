@@ -21,6 +21,7 @@ DEM_PATH = str((BASE_DIR / "data" / "Digital Terrain Model.tif").resolve())
 SAMPLE_DISTANCE_M = 2.0   # 沿路抽樣間距 (公尺)
 MAX_ACCEPTABLE_SLOPE_DEG = 6.0  # 前端顯示閾值（示意）
 
+
 # 快取 (選用 Redis)
 USE_REDIS = False
 REDIS_URL = "redis://redis:6379/0"
