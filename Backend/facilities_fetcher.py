@@ -2,6 +2,21 @@ import requests, logging
 from config import BARRIER_FREE_API_BASE, BARRIER_FREE_API_KEY, OVERPASS_URL, REQUEST_TIMEOUT
 logger = logging.getLogger(__name__)
 
+
+def _determine_facility_type(tags, fallback="facility"):
+    if tags.get("elevator") == "yes":
+        return "elevator"
+    if tags.get("highway") == "steps":
+        return "steps"
+    if tags.get("amenity") == "toilets":
+        return "toilet"
+    if tags.get("ramp") == "yes":
+        return "ramp"
+    if tags.get("wheelchair") == "no":
+        return "obstacle"
+    return fallback
+
+
 def fetch_barrier_free(bbox):
     url = f"{BARRIER_FREE_API_BASE}/locations"
     headers = {"Authorization": f"Bearer {BARRIER_FREE_API_KEY}"}
@@ -10,9 +25,10 @@ def fetch_barrier_free(bbox):
         r = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
         r.raise_for_status()
         return r.json()
-    except Exception as e:
+    except Exception:
         logger.exception("Barrier Free error")
         return {}
+
 
 def fetch_overpass(bbox):
     s,w,n,e = bbox
@@ -21,8 +37,14 @@ def fetch_overpass(bbox):
     (
       node["elevator"="yes"]({s},{w},{n},{e});
       node["amenity"="toilets"]({s},{w},{n},{e});
+      node["highway"="steps"]({s},{w},{n},{e});
+      way["highway"="steps"]({s},{w},{n},{e});
+      node["ramp"="yes"]({s},{w},{n},{e});
+      node["wheelchair"="no"]({s},{w},{n},{e});
     );
     out body;
+    >;
+    out skel qt;
     """
     try:
         r = requests.post(
@@ -33,9 +55,10 @@ def fetch_overpass(bbox):
         )
         r.raise_for_status()
         return r.json()
-    except Exception as e:
+    except Exception:
         logger.exception("Overpass error")
         return {}
+
 
 def normalize(barrier_json, overpass_json):
     facs = []
@@ -49,15 +72,15 @@ def normalize(barrier_json, overpass_json):
                          "source":"barrierfree","status":it.get("status","")})
     # Overpass
     for el in overpass_json.get("elements", []):
-        if el.get("type")!="node": continue
         lat, lon = el.get("lat"), el.get("lon")
-        tags = el.get("tags",{})
-        if tags.get("elevator")=="yes":
-            ftype="elevator"
-        elif tags.get("amenity")=="toilets":
-            ftype="toilet"
-        else: ftype="facility"
-        facs.append({"type":ftype,"name":tags.get("name",""),
+        tags = el.get("tags", {})
+        if el.get("type") == "way":
+            lat = (el.get("center") or {}).get("lat")
+            lon = (el.get("center") or {}).get("lon")
+        if lat is None or lon is None:
+            continue
+        ftype = _determine_facility_type(tags, fallback="facility")
+        facs.append({"type":ftype,"name":tags.get("name") or ftype,
                      "longitude":lon,"latitude":lat,
                      "source":"osm","status":tags.get("status","")})
     return facs

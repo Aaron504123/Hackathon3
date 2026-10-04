@@ -103,6 +103,61 @@
   font-size: 1.3rem;
 }
 
+.obstacle-panel {
+  background: #f8fafc;
+  border: 1px solid #dfeaf7;
+  border-radius: 16px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.obstacle-panel h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.obstacle-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.obstacle-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  border: 1px solid transparent;
+}
+
+.obstacle-badge.step {
+  background: #fef2f2;
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+
+.obstacle-badge.elevator {
+  background: #ecfdf5;
+  color: #166534;
+  border-color: #bbf7d0;
+}
+
+.obstacle-badge.safe {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+}
+
+.route-warning {
+  margin: 0;
+}
+
 .legend {
   background: #f8fafc;
   border: 1px solid #e2e8f0;

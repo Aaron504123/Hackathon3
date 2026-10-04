@@ -116,6 +116,26 @@ function getSlopeColor(value) {
   return '#ef4444'
 }
 
+function getFacilityColor(type = '') {
+  const text = String(type).toLowerCase()
+  if (text.includes('step') || text.includes('stair')) return '#ef4444'
+  if (text.includes('elevator') || text.includes('lift')) return '#16a34a'
+  if (text.includes('ramp')) return '#f59e0b'
+  if (text.includes('toilet')) return '#2563eb'
+  if (text.includes('obstacle')) return '#7c3aed'
+  return '#64748b'
+}
+
+function getFacilityLabel(type = '') {
+  const text = String(type).toLowerCase()
+  if (text.includes('step') || text.includes('stair')) return '樓梯'
+  if (text.includes('elevator') || text.includes('lift')) return '升降機'
+  if (text.includes('ramp')) return '斜坡'
+  if (text.includes('toilet')) return '無障礙廁所'
+  if (text.includes('obstacle')) return '障礙'
+  return '設施'
+}
+
 function App() {
   const mapContainerRef = useRef(null)
   const mapRef = useRef(null)
@@ -214,9 +234,56 @@ function App() {
 
     markersRef.current = [startMarker, endMarker]
 
+    const obstacleFeatures = (routeData.facilities || [])
+      .filter((facility) => /step|stair|elevator|lift|ramp|obstacle/i.test(facility.type || ''))
+      .map((facility) => ({
+        type: 'Feature',
+        properties: {
+          type: facility.type,
+          name: facility.name || facility.type,
+          color: getFacilityColor(facility.type),
+        },
+        geometry: {
+          type: 'Point',
+          coordinates: [facility.longitude, facility.latitude],
+        },
+      }))
+
+    if (obstacleFeatures.length > 0) {
+      const obstacleSourceId = 'route-obstacle-points'
+      const obstacleLayerId = 'route-obstacle-points-layer'
+
+      if (map.getLayer(obstacleLayerId)) map.removeLayer(obstacleLayerId)
+      if (map.getSource(obstacleSourceId)) map.removeSource(obstacleSourceId)
+
+      map.addSource(obstacleSourceId, {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features: obstacleFeatures,
+        },
+      })
+
+      map.addLayer({
+        id: obstacleLayerId,
+        type: 'circle',
+        source: obstacleSourceId,
+        paint: {
+          'circle-radius': 9,
+          'circle-color': ['get', 'color'],
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': 2,
+          'circle-opacity': 0.9,
+        },
+      })
+    }
+
     routeData.facilities?.forEach((facility) => {
-      const isToilet = facility.type?.toLowerCase().includes('toilet')
-      let markerOptions = { color: '#2563eb' }
+      const typeText = String(facility.type || '').toLowerCase()
+      const isToilet = typeText.includes('toilet')
+      const obstacleLabel = getFacilityLabel(facility.type)
+      const obstacleColor = getFacilityColor(facility.type)
+      let markerOptions = { color: obstacleColor }
 
       if (isToilet) {
         const icon = document.createElement('img')
@@ -230,8 +297,8 @@ function App() {
         .setLngLat([facility.longitude, facility.latitude])
         .setPopup(
           new mapboxgl.Popup({ offset: 18 }).setHTML(`
-            <strong>${facility.name || facility.type}</strong><br />
-            ${facility.type}
+            <strong>${facility.name || obstacleLabel}</strong><br />
+            ${facility.type || obstacleLabel}
           `),
         )
         .addTo(map)
@@ -265,7 +332,13 @@ function App() {
       const payload = await readJsonResponse(response, '後端路線服務')
 
       setRouteData(payload)
-      setStatus(`起點：${startLocation.name}；終點：${endLocation.name}。找到 ${payload.facilities?.length ?? 0} 個設施資訊。`)
+      const obstacleSummary = payload.route_obstacles || {}
+      const obstacleText = obstacleSummary.has_step_obstacle
+        ? '有樓梯障礙'
+        : obstacleSummary.has_elevator_access
+          ? '有升降機接近'
+          : '未檢測到明顯樓梯／升降機'
+      setStatus(`起點：${startLocation.name}；終點：${endLocation.name}。${obstacleText}，找到 ${payload.facilities?.length ?? 0} 個設施資訊。`)
     } catch (requestError) {
       setError(
         requestError instanceof TypeError
@@ -322,6 +395,19 @@ function App() {
             <span>設施數量</span>
             <strong>{facilityCount}</strong>
           </div>
+        </div>
+
+        <div className="obstacle-panel">
+          <h2>路線障礙狀態</h2>
+          <div className="obstacle-badges">
+            <span className={`obstacle-badge ${routeData?.route_obstacles?.has_step_obstacle ? 'step' : 'safe'}`}>
+              {routeData?.route_obstacles?.has_step_obstacle ? '有樓梯' : '無明顯樓梯'}
+            </span>
+            <span className={`obstacle-badge ${routeData?.route_obstacles?.has_elevator_access ? 'elevator' : 'safe'}`}>
+              {routeData?.route_obstacles?.has_elevator_access ? '有升降機' : '未確認升降機'}
+            </span>
+          </div>
+          {routeData?.warning ? <div className="alert info route-warning">{routeData.warning}</div> : null}
         </div>
 
         <div className="legend">
