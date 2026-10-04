@@ -25,7 +25,12 @@ def fetch_overpass(bbox):
     out body;
     """
     try:
-        r = requests.post(OVERPASS_URL, data=q.encode('utf-8'), timeout=REQUEST_TIMEOUT)
+        r = requests.post(
+            OVERPASS_URL,
+            data=q.encode('utf-8'),
+            headers={"User-Agent": "AccessibleRouteHackathon/1.0", "Accept": "application/json"},
+            timeout=REQUEST_TIMEOUT,
+        )
         r.raise_for_status()
         return r.json()
     except Exception as e:
