@@ -129,7 +129,7 @@ def query_ors_routes(start, end):
             "avoid_features": ["steps"],
             "profile_params": {
                 "restrictions": {
-                    "maximum_incline": 15
+                    "maximum_incline": 10
                 }
             }
         },

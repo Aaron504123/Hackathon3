@@ -197,6 +197,13 @@
   filter: drop-shadow(0 2px 3px rgb(15 23 42 / 35%));
 }
 
+.stairs-marker-icon {
+  display: block;
+  width: 42px;
+  height: auto;
+  filter: drop-shadow(0 2px 3px rgb(15 23 42 / 35%));
+}
+
 .alert {
   border-radius: 12px;
   padding: 12px 14px;

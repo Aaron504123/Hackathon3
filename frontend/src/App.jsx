@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import mapboxgl from 'mapbox-gl'
 import accessibleToiletIcon from '../../images/Accessible_Toilet.png'
+import stairsMarkerIcon from '../../images/stairs_marker.svg'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import './App.css'
 
@@ -281,6 +282,7 @@ function App() {
     routeData.facilities?.forEach((facility) => {
       const typeText = String(facility.type || '').toLowerCase()
       const isToilet = typeText.includes('toilet')
+      const isStairs = typeText.includes('step') || typeText.includes('stair')
       const obstacleLabel = getFacilityLabel(facility.type)
       const obstacleColor = getFacilityColor(facility.type)
       let markerOptions = { color: obstacleColor }
@@ -290,6 +292,12 @@ function App() {
         icon.src = accessibleToiletIcon
         icon.alt = facility.name || '無障礙廁所'
         icon.className = 'toilet-marker-icon'
+        markerOptions = { element: icon, anchor: 'bottom' }
+      } else if (isStairs) {
+        const icon = document.createElement('img')
+        icon.src = stairsMarkerIcon
+        icon.alt = facility.name || '樓梯'
+        icon.className = 'stairs-marker-icon'
         markerOptions = { element: icon, anchor: 'bottom' }
       }
 
