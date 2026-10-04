@@ -2,6 +2,7 @@
   display: grid;
   grid-template-columns: 360px 1fr;
   min-height: 100vh;
+  min-height: 100dvh;
   background: #f5f7fb;
   color: #10233d;
 }
@@ -134,6 +135,13 @@
 .orange { background: #f97316; }
 .red { background: #ef4444; }
 
+.toilet-marker-icon {
+  display: block;
+  width: 40px;
+  height: auto;
+  filter: drop-shadow(0 2px 3px rgb(15 23 42 / 35%));
+}
+
 .alert {
   border-radius: 12px;
   padding: 12px 14px;
@@ -172,11 +180,110 @@
   }
 
   .map-area {
-    min-height: 60vh;
+    height: 60vh;
+    min-height: 360px;
+    max-height: 640px;
   }
 
   .sidebar {
     border-right: none;
     border-bottom: 1px solid #dde7f4;
+    padding: 24px 20px;
+    gap: 18px;
+  }
+}
+
+@media (max-width: 600px) {
+  .sidebar {
+    gap: 14px;
+    padding: 18px 16px 16px;
+  }
+
+  .brand-block {
+    gap: 4px;
+  }
+
+  .brand-block h1 {
+    font-size: 1.55rem;
+  }
+
+  .control-group {
+    gap: 11px;
+  }
+
+  .control-group label {
+    gap: 5px;
+    font-size: 0.88rem;
+  }
+
+  .control-group input {
+    width: 100%;
+    min-width: 0;
+    min-height: 48px;
+    padding: 10px 12px;
+    font-size: 1rem;
+  }
+
+  .control-group button {
+    min-height: 48px;
+    padding: 10px 14px;
+  }
+
+  .summary-grid {
+    gap: 10px;
+  }
+
+  .stat-card {
+    min-width: 0;
+    padding: 12px;
+    gap: 4px;
+    border-radius: 12px;
+  }
+
+  .stat-card span {
+    font-size: 0.7rem;
+  }
+
+  .stat-card strong {
+    font-size: 1.15rem;
+  }
+
+  .legend {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+    padding: 12px;
+    border-radius: 12px;
+  }
+
+  .legend h2 {
+    grid-column: 1 / -1;
+    margin-bottom: 0;
+  }
+
+  .legend-row {
+    min-width: 0;
+    gap: 8px;
+    margin: 0;
+    font-size: 0.88rem;
+  }
+
+  .dot {
+    width: 11px;
+    height: 11px;
+    flex: 0 0 11px;
+  }
+
+  .alert {
+    padding: 10px 12px;
+    overflow-wrap: anywhere;
+    font-size: 0.88rem;
+  }
+
+  .map-area {
+    width: 100%;
+    height: 56svh;
+    min-height: 320px;
+    max-height: 520px;
   }
 }

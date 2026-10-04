@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import mapboxgl from 'mapbox-gl'
+import accessibleToiletIcon from '../../images/Accessible_Toilet.png'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import './App.css'
 
@@ -214,7 +215,18 @@ function App() {
     markersRef.current = [startMarker, endMarker]
 
     routeData.facilities?.forEach((facility) => {
-      const marker = new mapboxgl.Marker({ color: '#2563eb' })
+      const isToilet = facility.type?.toLowerCase().includes('toilet')
+      let markerOptions = { color: '#2563eb' }
+
+      if (isToilet) {
+        const icon = document.createElement('img')
+        icon.src = accessibleToiletIcon
+        icon.alt = facility.name || '無障礙廁所'
+        icon.className = 'toilet-marker-icon'
+        markerOptions = { element: icon, anchor: 'bottom' }
+      }
+
+      const marker = new mapboxgl.Marker(markerOptions)
         .setLngLat([facility.longitude, facility.latitude])
         .setPopup(
           new mapboxgl.Popup({ offset: 18 }).setHTML(`

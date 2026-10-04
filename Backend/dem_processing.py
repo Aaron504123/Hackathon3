@@ -4,7 +4,7 @@ from pathlib import Path
 from shapely.geometry import LineString
 from pyproj import Transformer
 from geographiclib.geodesic import Geodesic
-from config import DEM_PATH, SAMPLE_DISTANCE_M
+from config import DEM_PATH, SAMPLE_DISTANCE_M, SLOPE_SMOOTHING_WINDOW_M
 
 if not Path(DEM_PATH).exists():
     raise FileNotFoundError(f"DEM file not found: {DEM_PATH}")
@@ -41,6 +41,56 @@ def sample_elevations(coords, sample_distance_m=SAMPLE_DISTANCE_M):
         samples.append((lon, lat, elev))
 
     return samples
+
+def smooth_elevations(samples, window_m=SLOPE_SMOOTHING_WINDOW_M):
+    if len(samples) < 3 or window_m <= 0:
+        return samples
+
+    geod = Geodesic.WGS84
+    distances = [0.0]
+    for index in range(len(samples) - 1):
+        lon1, lat1, _ = samples[index]
+        lon2, lat2, _ = samples[index + 1]
+        distances.append(distances[-1] + geod.Inverse(lat1, lon1, lat2, lon2)['s12'])
+
+    smoothed = []
+    left = 0
+    right = 0
+    half_window = window_m / 2
+
+    for index, (lon, lat, elevation) in enumerate(samples):
+        distance = distances[index]
+        while distances[left] < distance - half_window:
+            left += 1
+        while right < len(samples) and distances[right] <= distance + half_window:
+            right += 1
+
+        window = [
+            (distances[sample_index] - distance, samples[sample_index][2])
+            for sample_index in range(left, right)
+            if samples[sample_index][2] is not None
+        ]
+
+        if elevation is None or len(window) < 2:
+            smoothed.append((lon, lat, elevation))
+            continue
+
+        mean_distance = sum(item[0] for item in window) / len(window)
+        mean_elevation = sum(item[1] for item in window) / len(window)
+        variance = sum((item[0] - mean_distance) ** 2 for item in window)
+        if variance == 0:
+            smoothed.append((lon, lat, elevation))
+            continue
+
+        covariance = sum(
+            (offset - mean_distance) * (value - mean_elevation)
+            for offset, value in window
+        )
+        trend = covariance / variance
+        fitted_elevation = mean_elevation - trend * mean_distance
+        smoothed.append((lon, lat, fitted_elevation))
+
+    return smoothed
 
 def compute_slopes(samples):
     geod = Geodesic.WGS84

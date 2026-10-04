@@ -1,5 +1,6 @@
 import rasterio
 from config import DEM_PATH
+from dem_processing import compute_slopes, smooth_elevations
 
 def main():
     # 打開 DEM 檔案
@@ -16,6 +17,20 @@ def main():
     band1 = ds.read(1)
     sample_value = band1[0, 0]  # 左上角像素
     print("左上角像素高程值:", sample_value)
+
+def test_smoothing_reduces_isolated_elevation_jumps():
+    samples = [
+        (114.17 + index * 0.00005, 22.32, elevation)
+        for index, elevation in enumerate([10, 10, 10, 12, 12, 10, 10, 10, 10])
+    ]
+
+    raw_slopes = compute_slopes(samples)
+    smoothed_slopes = compute_slopes(smooth_elevations(samples))
+    raw_max = max(abs(segment["slope_deg"]) for segment in raw_slopes)
+    smoothed_max = max(abs(segment["slope_deg"]) for segment in smoothed_slopes)
+
+    assert raw_max > 10
+    assert smoothed_max < 10
 
 if __name__ == "__main__":
     main()

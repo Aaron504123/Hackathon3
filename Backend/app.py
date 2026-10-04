@@ -4,7 +4,7 @@ import requests
 from concurrent.futures import ThreadPoolExecutor
 
 from config import MAPBOX_TOKEN, SAMPLE_DISTANCE_M
-from dem_processing import sample_elevations, compute_slopes
+from dem_processing import sample_elevations, smooth_elevations, compute_slopes
 from facilities_fetcher import fetch_barrier_free, fetch_overpass, normalize
 
 app = Flask(__name__)
@@ -55,7 +55,9 @@ def route():
         coords = build_fallback_route(start, end)
 
     # DEM slope calculation
-    samples = sample_elevations(coords, sample_distance_m=SAMPLE_DISTANCE_M)
+    samples = smooth_elevations(
+        sample_elevations(coords, sample_distance_m=SAMPLE_DISTANCE_M)
+    )
     segments = compute_slopes(samples)
     elevations = [float(elevation) for _, _, elevation in samples if elevation is not None]
     slopes = [float(segment["slope_deg"]) for segment in segments if segment.get("slope_deg") is not None]

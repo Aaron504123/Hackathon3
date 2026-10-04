@@ -19,6 +19,7 @@ DEM_PATH = str((BASE_DIR / "data" / "Digital Terrain Model.tif").resolve())
 
 # 抽樣與閾值
 SAMPLE_DISTANCE_M = 5.0   # 與 DEM 解析度一致的沿路抽樣間距 (公尺)
+SLOPE_SMOOTHING_WINDOW_M = 20.0  # 以局部趨勢降低單一 DEM 像素的高程跳動 (公尺)
 MAX_ACCEPTABLE_SLOPE_DEG = 6.0  # 前端顯示閾值（示意）
 
 
