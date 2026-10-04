@@ -3,6 +3,7 @@ from unittest.mock import Mock
 import pytest
 import requests
 import facilities_fetcher
+import app as app_module
 from app import app, choose_preferred_route, classify_route_obstacles, normalize_route_geometry, _filter_facilities_near_route
 
 @pytest.fixture
@@ -112,6 +113,45 @@ def test_route_keeps_ors_route_when_facility_api_fails(client, monkeypatch):
     data = response.get_json()
     assert data["route_source"] == "openrouteservice"
     assert data["warning"] is None
+
+
+def test_route_uses_mapbox_walking_when_ors_cannot_route(client, monkeypatch):
+    coordinates = [[114.1762, 22.3365], [114.1735, 22.3359]]
+    monkeypatch.setattr(
+        app_module,
+        "query_ors_routes",
+        lambda start, end: (_ for _ in ()).throw(requests.HTTPError("ORS route not found")),
+    )
+    monkeypatch.setattr(app_module, "query_mapbox_route", lambda start, end: coordinates)
+    monkeypatch.setattr(app_module, "fetch_facilities_nearby", lambda bbox: [])
+    monkeypatch.setattr(
+        app_module,
+        "sample_elevations",
+        lambda route, sample_distance_m: [
+            (route[0][0], route[0][1], 10.0),
+            (route[-1][0], route[-1][1], 12.0),
+        ],
+    )
+    monkeypatch.setattr(app_module, "smooth_elevations", lambda samples: samples)
+    monkeypatch.setattr(
+        app_module,
+        "compute_slopes",
+        lambda samples: [{
+            "from": samples[0][:2],
+            "to": samples[-1][:2],
+            "distance_m": 300.0,
+            "dz_m": 2.0,
+            "slope_deg": 1.0,
+        }],
+    )
+
+    response = client.post("/route", json={"start": coordinates[0], "end": coordinates[-1]})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["route_source"] == "mapbox_walking"
+    assert data["route"]["coordinates"] == coordinates
+    assert data["warning"]
 
 
 def test_fetch_barrier_free_skips_placeholder_api_key(monkeypatch):

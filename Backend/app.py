@@ -185,6 +185,27 @@ def query_ors_routes(start, end):
     return response.json()
 
 
+def query_mapbox_route(start, end):
+    url = f"{MAPBOX_URL}/{start[0]},{start[1]};{end[0]},{end[1]}"
+    response = requests.get(
+        url,
+        params={
+            "geometries": "geojson",
+            "overview": "full",
+            "access_token": MAPBOX_TOKEN,
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    routes = response.json().get("routes") or []
+    if not routes:
+        raise ValueError("Mapbox returned no walking routes")
+    coordinates = routes[0].get("geometry", {}).get("coordinates") or []
+    if not coordinates:
+        raise ValueError("Mapbox walking route has no geometry")
+    return coordinates
+
+
 def fetch_facilities_nearby(bbox):
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -213,6 +234,7 @@ def route():
     coords = build_fallback_route(start, end)
     route_source = "fallback"
     route_obstacles = []
+    mapbox_failure = None
 
     try:
         ors_payload = query_ors_routes(start, end)
@@ -231,10 +253,17 @@ def route():
                 raise ValueError("No valid ORS route selected")
         else:
             raise ValueError("No ORS routes returned")
-    except Exception:
-        logging.exception("ORS route failed, using fallback route")
-        route_source = "fallback"
-        coords = build_fallback_route(start, end)
+    except Exception as ors_error:
+        logging.warning("ORS wheelchair route unavailable; trying Mapbox walking: %s", ors_error)
+        try:
+            coords = query_mapbox_route(start, end)
+            route_source = "mapbox_walking"
+        except Exception as mapbox_error:
+            status_code = getattr(getattr(mapbox_error, "response", None), "status_code", None)
+            mapbox_failure = f"HTTP {status_code}" if status_code else type(mapbox_error).__name__
+            logging.warning("Mapbox walking route failed (%s); using straight-line fallback", mapbox_failure)
+            route_source = "fallback"
+            coords = build_fallback_route(start, end)
 
     # DEM slope calculation
     samples = smooth_elevations(
@@ -256,6 +285,10 @@ def route():
     route_warning = None
     if route_source == "fallback":
         route_warning = "Mapbox/ORS 路由不可用，使用直線備援；此路徑不代表可行走道路。"
+        if mapbox_failure:
+            route_warning += f" Mapbox 步行路線錯誤：{mapbox_failure}。"
+    elif route_source == "mapbox_walking":
+        route_warning = "ORS 無法提供輪椅路線，以下為一般步行路線，未保證適合輪椅通行。"
     elif route_facility_summary["has_step_obstacle"]:
         route_warning = "本路線沿線有已標記的樓梯／步階障礙，請以實際路況與設施資料確認。"
     elif route_facility_summary["has_elevator_access"]:
