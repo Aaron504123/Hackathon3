@@ -160,7 +160,7 @@ function App() {
 
     const map = new mapboxgl.Map({
       container: mapContainerRef.current,
-      style: 'mapbox://styles/mapbox/light-v11',
+      style: 'mapbox://styles/aaron504123/cmutmz3vh00hp01sd40m61umx',
       center: [114.17, 22.32],
       zoom: 13,
       attributionControl: false,
@@ -212,9 +212,14 @@ function App() {
       id: layerId,
       type: 'line',
       source: sourceId,
+      layout: {
+        'line-cap': 'round',
+        'line-join': 'round',
+        'line-simplification': 0.2,
+      },
       paint: {
         'line-color': ['case', ['==', ['get', 'slope'], null], '#94a3b8', ['get', 'color']],
-        'line-width': 6,
+        'line-width': 7,
         'line-opacity': 0.95,
       },
     })
