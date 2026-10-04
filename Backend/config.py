@@ -18,8 +18,9 @@ BASE_DIR = Path(__file__).resolve().parent
 DEM_PATH = str((BASE_DIR / "data" / "Digital Terrain Model.tif").resolve())
 
 # 抽樣與閾值
-SAMPLE_DISTANCE_M = 2.0   # 沿路抽樣間距 (公尺)
+SAMPLE_DISTANCE_M = 5.0   # 與 DEM 解析度一致的沿路抽樣間距 (公尺)
 MAX_ACCEPTABLE_SLOPE_DEG = 6.0  # 前端顯示閾值（示意）
+
 
 # 快取 (選用 Redis)
 USE_REDIS = False
