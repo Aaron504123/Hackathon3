@@ -1,0 +1,109 @@
+Example code:
+
+import requests
+
+body = {"coordinates":[[22.337021,114.176168],[8.686507,49.41943],[8.687872,49.420318]],"attributes":["percentage"],"extra_info":["steepness","suitability","surface","waycategory","waytype","traildifficulty","roadaccessrestrictions","shadow"],"instructions":"true","instructions_format":"text","language":"zh","options":{"avoid_features":["steps"],"profile_params":{"restrictions":{"maximum_incline":15}}},"preference":"recommended","units":"m"}
+
+headers = {
+    'Accept': 'application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8',
+    'Authorization': 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImNmMDY0MGQ3OTM3NzQ3NGY5YTdlOTAzYjhhYWI0MTc2IiwiaCI6Im11cm11cjY0In0=',
+    'Content-Type': 'application/json; charset=utf-8'
+}
+call = requests.post('https://api.heigit.org/openrouteservice/v2/directions/wheelchair', json=body, headers=headers)
+
+print(call.status_code, call.reason)
+print(call.text)
+
+------------------------------------------------------------
+* means it is required. df means default value
+
+Key Value
+
+Authorization*: (string) df.: eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImNmMDY0MGQ3OTM3NzQ3NGY5YTdlOTAzYjhhYWI0MTc2IiwiaCI6Im11cm11cjY0In0=
+
+------------------------------------------------------------
+Example part of Body:
+
+* means it is required. df means default value
+
+Key: Value
+
+coordinates*:(array) eg.: [[8.681495,49.41461],[8.686507,49.41943],[8.687872,49.420318]]
+
+alternative_routes: (object) eg.: {"target_count":2,"weight_factor":1.6}
+
+attributes: (array) eg.: ["avgspeed","percentage"]
+
+continue_straight: (boolean) df.: false
+
+custom_model: (object) eg.: {"speed":[{"if":true,"limit_to":100}],"priority":[{"if":"road_class == MOTORWAY","multiply_by":0}],"distance_influence":100}
+
+elevation: (boolean) eg.: false
+
+extra_info: (array) eg.: ["waytype","surface"]
+
+geometry_simplify: (boolean) df.: false
+
+id: (string) eg.: my_request
+
+instructions: (boolean) df.: true
+
+instructions_format: (string) df.: text
+
+language: (string) df.: en
+
+maneuvers: (boolean) df.: false
+
+options: (object) eg.: {"avoid_borders":"controlled"}
+
+preference: (string) df.: recommended
+
+radiuses: (array) eg.: [200,-1,30]
+
+roundabout_exits: (boolean) df.: false
+
+skip_segments: (array) eg.: [2,4]
+
+suppress_warnings: (boolean) eg.: false
+
+units: (string) df.: m
+
+geometry: (boolean) df.: true
+
+Disabled fields for this parameter configuration : 2
+
+1. bearings: (array) eg.: [[30,20],[],[40,20]]
+
+2. maximum_speed: (number) eg.: 90
+
+------------------------------------------------------------
+Path parameters
+
+* means it is required. df means default value
+
+Key: Value
+
+profile*: (string) choices: cycling-road;cycling-mountain;cycling-electric;foot-walking;foot-hiking;wheelchair;driving-car;driving-hgv;cycling-regular
+
+----------------------------------------------------------------
+Responses
+
+Status Description
+
+200 Standard response for successfully processed requests. Returns JSON. The decoded values of the extra information can be found here.
+
+400 The request is incorrect and therefore can not be processed.
+
+404 An element could not be found. If possible, a more detailed error code is provided.
+
+405 The specified HTTP method is not supported. For more details, refer to the EndPoint documentation.
+
+413 The request is larger than the server is able to process, the data provided in the request exceeds the capacity limit.
+
+500 An unexpected error was encountered and a more detailed error code is provided.
+
+501 Indicates that the server does not support the functionality needed to fulfill the request.
+
+503 The server is currently unavailable due to overload or maintenance.
+
+

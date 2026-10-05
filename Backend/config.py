@@ -1,14 +1,20 @@
+import os
 from pathlib import Path
 
 # config.py
 # 請修改以下值為你的實際設定（不要把 Key 放到前端）
 
 # Mapbox
-MAPBOX_TOKEN = "pk.eyJ1IjoiYWFyb241MDQxMjMiLCJhIjoiY211cjZwNmx6MDA0eTJ4b2Q3M3R4MHdsayJ9.lGndsS1VXmYGTOFrg2LPGg"
+MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "pk.eyJ1IjoiYWFyb241MDQxMjMiLCJhIjoiY211cjZwNmx6MDA0eTJ4b2Q3M3R4MHdsayJ9.lGndsS1VXmYGTOFrg2LPGg")
+
+# OpenRouteService
+ORS_API_KEY = os.getenv("ORS_API_KEY", "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImNmMDY0MGQ3OTM3NzQ3NGY5YTdlOTAzYjhhYWI0MTc2IiwiaCI6Im11cm11cjY0In0=")
+ORS_API_BASE = "https://api.openrouteservice.org"
+ORS_PROFILE = os.getenv("ORS_PROFILE", "wheelchair")
 
 # Barrier Free Map API (NGO)
 BARRIER_FREE_API_BASE = "https://wpc-pwa-api.barrierfreemap.hk/api"
-BARRIER_FREE_API_KEY = "YOUR_BARRIER_FREE_API_KEY"
+BARRIER_FREE_API_KEY = os.getenv("BARRIER_FREE_API_KEY", "YOUR_BARRIER_FREE_API_KEY")
 
 # Overpass API
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"

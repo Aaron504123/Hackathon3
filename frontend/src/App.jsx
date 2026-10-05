@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import mapboxgl from 'mapbox-gl'
+import * as OpenCC from 'opencc-js'
 import accessibleToiletIcon from '../../images/Accessible_Toilet.png'
+import stairsMarkerIcon from '../../images/stairs_marker.svg'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import './App.css'
 
@@ -13,6 +15,9 @@ const HONG_KONG_BOUNDS = {
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || '/api'
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN || ''
+
+const toTraditionalChinese = OpenCC.Converter({ from: 'cn', to: 'tw' })
+const toSimplifiedChinese = OpenCC.Converter({ from: 'tw', to: 'cn' })
 
 async function fetchWithTimeout(url, options, timeoutMs, serviceName) {
   const controller = new AbortController()
@@ -69,33 +74,43 @@ async function geocodeLocation(query, label) {
     throw new Error(`請輸入${label}地點。`)
   }
 
-  const params = new URLSearchParams({
-    q: query.trim(),
-    lat: '22.32',
-    lon: '114.17',
-    limit: '8',
-    lang: 'en',
-  })
-  const url = `https://photon.komoot.io/api/?${params}`
-  let response
-  try {
-    response = await fetchWithTimeout(url, undefined, 20000, '地點搜尋')
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('逾時')) {
-      throw error
-    }
-    throw new Error('無法連線到地點搜尋服務，請檢查網路連線。')
-  }
-  const payload = await readJsonResponse(response, '地點搜尋服務')
+  const searchQueries = [
+    toTraditionalChinese(query.trim()),
+    query.trim(),
+    toSimplifiedChinese(query.trim()),
+  ].filter((candidate, index, candidates) => candidate && candidates.indexOf(candidate) === index)
 
-  const feature = payload.features?.find((candidate) => {
-    const coordinates = candidate.geometry?.coordinates
-    return Array.isArray(coordinates) && coordinates.length === 2 &&
-      coordinates[0] >= HONG_KONG_BOUNDS.minLng &&
-      coordinates[0] <= HONG_KONG_BOUNDS.maxLng &&
-      coordinates[1] >= HONG_KONG_BOUNDS.minLat &&
-      coordinates[1] <= HONG_KONG_BOUNDS.maxLat
-  })
+  let feature
+  for (const searchQuery of searchQueries) {
+    const params = new URLSearchParams({
+      q: searchQuery,
+      lat: '22.32',
+      lon: '114.17',
+      limit: '8',
+    })
+    const url = `https://photon.komoot.io/api/?${params}`
+    let response
+    try {
+      response = await fetchWithTimeout(url, undefined, 20000, '地點搜尋')
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('逾時')) {
+        throw error
+      }
+      throw new Error('無法連線到地點搜尋服務，請檢查網路連線。')
+    }
+    const payload = await readJsonResponse(response, '地點搜尋服務')
+
+    feature = payload.features?.find((candidate) => {
+      const coordinates = candidate.geometry?.coordinates
+      return Array.isArray(coordinates) && coordinates.length === 2 &&
+        coordinates[0] >= HONG_KONG_BOUNDS.minLng &&
+        coordinates[0] <= HONG_KONG_BOUNDS.maxLng &&
+        coordinates[1] >= HONG_KONG_BOUNDS.minLat &&
+        coordinates[1] <= HONG_KONG_BOUNDS.maxLat
+    })
+    if (feature) break
+  }
+
   if (!feature) {
     throw new Error(`找不到${label}「${query.trim()}」，請嘗試輸入更完整的地點名稱。`)
   }
@@ -114,6 +129,26 @@ function getSlopeColor(value) {
   if (abs < 6) return '#facc15'
   if (abs < 10) return '#f97316'
   return '#ef4444'
+}
+
+function getFacilityColor(type = '') {
+  const text = String(type).toLowerCase()
+  if (text.includes('step') || text.includes('stair')) return '#ef4444'
+  if (text.includes('elevator') || text.includes('lift')) return '#16a34a'
+  if (text.includes('ramp')) return '#f59e0b'
+  if (text.includes('toilet')) return '#2563eb'
+  if (text.includes('obstacle')) return '#7c3aed'
+  return '#64748b'
+}
+
+function getFacilityLabel(type = '') {
+  const text = String(type).toLowerCase()
+  if (text.includes('step') || text.includes('stair')) return '樓梯'
+  if (text.includes('elevator') || text.includes('lift')) return '升降機'
+  if (text.includes('ramp')) return '斜坡'
+  if (text.includes('toilet')) return '無障礙廁所'
+  if (text.includes('obstacle')) return '障礙'
+  return '設施'
 }
 
 function App() {
@@ -139,7 +174,7 @@ function App() {
 
     const map = new mapboxgl.Map({
       container: mapContainerRef.current,
-      style: 'mapbox://styles/mapbox/light-v11',
+      style: 'mapbox://styles/aaron504123/cmutmz3vh00hp01sd40m61umx',
       center: [114.17, 22.32],
       zoom: 13,
       attributionControl: false,
@@ -191,9 +226,13 @@ function App() {
       id: layerId,
       type: 'line',
       source: sourceId,
+      layout: {
+        'line-cap': 'round',
+        'line-join': 'round',
+      },
       paint: {
         'line-color': ['case', ['==', ['get', 'slope'], null], '#94a3b8', ['get', 'color']],
-        'line-width': 6,
+        'line-width': 7,
         'line-opacity': 0.95,
       },
     })
@@ -214,9 +253,57 @@ function App() {
 
     markersRef.current = [startMarker, endMarker]
 
+    const obstacleFeatures = (routeData.facilities || [])
+      .filter((facility) => /step|stair|elevator|lift|ramp|obstacle/i.test(facility.type || ''))
+      .map((facility) => ({
+        type: 'Feature',
+        properties: {
+          type: facility.type,
+          name: facility.name || facility.type,
+          color: getFacilityColor(facility.type),
+        },
+        geometry: {
+          type: 'Point',
+          coordinates: [facility.longitude, facility.latitude],
+        },
+      }))
+
+    if (obstacleFeatures.length > 0) {
+      const obstacleSourceId = 'route-obstacle-points'
+      const obstacleLayerId = 'route-obstacle-points-layer'
+
+      if (map.getLayer(obstacleLayerId)) map.removeLayer(obstacleLayerId)
+      if (map.getSource(obstacleSourceId)) map.removeSource(obstacleSourceId)
+
+      map.addSource(obstacleSourceId, {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features: obstacleFeatures,
+        },
+      })
+
+      map.addLayer({
+        id: obstacleLayerId,
+        type: 'circle',
+        source: obstacleSourceId,
+        paint: {
+          'circle-radius': 9,
+          'circle-color': ['get', 'color'],
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': 2,
+          'circle-opacity': 0.9,
+        },
+      })
+    }
+
     routeData.facilities?.forEach((facility) => {
-      const isToilet = facility.type?.toLowerCase().includes('toilet')
-      let markerOptions = { color: '#2563eb' }
+      const typeText = String(facility.type || '').toLowerCase()
+      const isToilet = typeText.includes('toilet')
+      const isStairs = typeText.includes('step') || typeText.includes('stair')
+      const obstacleLabel = getFacilityLabel(facility.type)
+      const obstacleColor = getFacilityColor(facility.type)
+      let markerOptions = { color: obstacleColor }
 
       if (isToilet) {
         const icon = document.createElement('img')
@@ -224,14 +311,20 @@ function App() {
         icon.alt = facility.name || '無障礙廁所'
         icon.className = 'toilet-marker-icon'
         markerOptions = { element: icon, anchor: 'bottom' }
+      } else if (isStairs) {
+        const icon = document.createElement('img')
+        icon.src = stairsMarkerIcon
+        icon.alt = facility.name || '樓梯'
+        icon.className = 'stairs-marker-icon'
+        markerOptions = { element: icon, anchor: 'bottom' }
       }
 
       const marker = new mapboxgl.Marker(markerOptions)
         .setLngLat([facility.longitude, facility.latitude])
         .setPopup(
           new mapboxgl.Popup({ offset: 18 }).setHTML(`
-            <strong>${facility.name || facility.type}</strong><br />
-            ${facility.type}
+            <strong>${facility.name || obstacleLabel}</strong><br />
+            ${facility.type || obstacleLabel}
           `),
         )
         .addTo(map)
@@ -265,7 +358,13 @@ function App() {
       const payload = await readJsonResponse(response, '後端路線服務')
 
       setRouteData(payload)
-      setStatus(`起點：${startLocation.name}；終點：${endLocation.name}。找到 ${payload.facilities?.length ?? 0} 個設施資訊。`)
+      const obstacleSummary = payload.route_obstacles || {}
+      const obstacleText = obstacleSummary.has_step_obstacle
+        ? '有樓梯障礙'
+        : obstacleSummary.has_elevator_access
+          ? '有升降機接近'
+          : '未檢測到明顯樓梯／升降機'
+      setStatus(`起點：${startLocation.name}；終點：${endLocation.name}。${obstacleText}，找到 ${payload.facilities?.length ?? 0} 個設施資訊。`)
     } catch (requestError) {
       setError(
         requestError instanceof TypeError
@@ -322,6 +421,19 @@ function App() {
             <span>設施數量</span>
             <strong>{facilityCount}</strong>
           </div>
+        </div>
+
+        <div className="obstacle-panel">
+          <h2>路線障礙狀態</h2>
+          <div className="obstacle-badges">
+            <span className={`obstacle-badge ${routeData?.route_obstacles?.has_step_obstacle ? 'step' : 'safe'}`}>
+              {routeData?.route_obstacles?.has_step_obstacle ? '有樓梯' : '無明顯樓梯'}
+            </span>
+            <span className={`obstacle-badge ${routeData?.route_obstacles?.has_elevator_access ? 'elevator' : 'safe'}`}>
+              {routeData?.route_obstacles?.has_elevator_access ? '有升降機' : '未確認升降機'}
+            </span>
+          </div>
+          {routeData?.warning ? <div className="alert info route-warning">{routeData.warning}</div> : null}
         </div>
 
         <div className="legend">
