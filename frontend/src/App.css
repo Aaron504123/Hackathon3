@@ -158,6 +158,17 @@
   margin: 0;
 }
 
+.facility-toggle-button {
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .legend {
   background: #f8fafc;
   border: 1px solid #e2e8f0;
@@ -191,6 +202,13 @@
 .red { background: #ef4444; }
 
 .toilet-marker-icon {
+  display: block;
+  width: 40px;
+  height: auto;
+  filter: drop-shadow(0 2px 3px rgb(15 23 42 / 35%));
+}
+
+.parking-marker-icon {
   display: block;
   width: 40px;
   height: auto;
@@ -381,3 +399,5 @@
     max-height: 520px;
   }
 }
+
+/* 2026-10-09: Added marker styling for accessible parking icons. */

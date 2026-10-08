@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO)
 
 MAPBOX_URL = "https://api.mapbox.com/directions/v5/mapbox/walking"
 ORS_URL = f"{ORS_API_BASE}/v2/directions/{ORS_PROFILE}/json"
-FACILITY_ROUTE_RADIUS_METERS = 40
+FACILITY_ROUTE_RADIUS_METERS = 1000
 
 
 def build_fallback_route(start, end, steps=25):
@@ -241,7 +241,7 @@ def route():
         routes = ors_payload.get("routes") or []
         if routes:
             lons, lats = [c[0] for c in coords], [c[1] for c in coords]
-            pad = 0.0012
+            pad = 0.01
             bbox = [min(lats) - pad, min(lons) - pad, max(lats) + pad, max(lons) + pad]
             obstacles = fetch_facilities_nearby(bbox)
             selected_route = choose_preferred_route(routes, obstacles)
@@ -274,10 +274,17 @@ def route():
     slopes = [float(segment["slope_deg"]) for segment in segments if segment.get("slope_deg") is not None]
 
     # Facility lookup
-    lons, lats = [c[0] for c in coords], [c[1] for c in coords]
-    pad = 0.0005
-    bbox = [min(lats) - pad, min(lons) - pad, max(lats) + pad, max(lons) + pad]
-    facilities = _filter_facilities_near_route(fetch_facilities_nearby(bbox), coords)
+    pad = 0.01
+    start_lon, start_lat = start
+    end_lon, end_lat = end
+    bbox = [
+        min(start_lat, end_lat) - pad,
+        min(start_lon, end_lon) - pad,
+        max(start_lat, end_lat) + pad,
+        max(start_lon, end_lon) + pad,
+    ]
+    facilities = fetch_facilities_nearby(bbox)
+    nearby_route_facilities = _filter_facilities_near_route(facilities, coords)
 
     route_facility_summary = classify_route_obstacles(facilities)
     max_slope = max([abs(s["slope_deg"]) for s in segments if s["slope_deg"] is not None], default=None)
@@ -308,6 +315,7 @@ def route():
             "facility_count": len(facilities),
             "has_step_obstacle": route_facility_summary["has_step_obstacle"],
             "has_elevator_access": route_facility_summary["has_elevator_access"],
+            "nearby_route_facility_count": len(nearby_route_facilities),
         },
     })
 

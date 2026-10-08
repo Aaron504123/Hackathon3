@@ -1,6 +1,8 @@
 import requests, logging
+from collections import Counter
 from config import BARRIER_FREE_API_BASE, BARRIER_FREE_API_KEY, OVERPASS_URL, REQUEST_TIMEOUT
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 def _determine_facility_type(tags, fallback="facility"):
@@ -8,8 +10,6 @@ def _determine_facility_type(tags, fallback="facility"):
         return "elevator"
     if tags.get("highway") == "steps":
         return "steps"
-    if tags.get("amenity") == "toilets":
-        return "toilet"
     if tags.get("ramp") == "yes":
         return "ramp"
     if tags.get("wheelchair") == "no":
@@ -17,18 +17,52 @@ def _determine_facility_type(tags, fallback="facility"):
     return fallback
 
 
+def _is_barrier_free_managed_osm_feature(tags):
+    amenity = str(tags.get("amenity", "")).lower()
+    return (
+        amenity in {"toilets", "parking", "parking_space"}
+        or bool(tags.get("parking"))
+        or bool(tags.get("parking_space"))
+        or any(key.startswith("parking:") for key in tags)
+        or bool(tags.get("capacity:disabled"))
+    )
+
+
 def fetch_barrier_free(bbox):
     if not BARRIER_FREE_API_KEY or BARRIER_FREE_API_KEY.strip() == "YOUR_BARRIER_FREE_API_KEY":
         logger.warning("BARRIER_FREE_API_KEY is not configured; skipping Barrier Free API")
         return {}
 
-    url = f"{BARRIER_FREE_API_BASE}/locations"
+    url = f"{BARRIER_FREE_API_BASE}/items"
     headers = {"Authorization": f"Bearer {BARRIER_FREE_API_KEY}"}
-    params = {"bbox": ",".join(map(str,bbox)), "facilityTypes":"elevator,toilet,ramp"}
     try:
-        r = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
+        r = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
         r.raise_for_status()
-        return r.json()
+        items = r.json().get("items", [])
+        if not isinstance(items, list):
+            logger.warning("Barrier Free API returned an invalid items list")
+            return {}
+
+        received_categories = Counter(str((item.get("item_category") or {}).get("id")) for item in items)
+        south, west, north, east = bbox
+        nearby_items = []
+        for item in items:
+            category_id = (item.get("item_category") or {}).get("id")
+            if category_id not in {3, 4}:
+                continue
+            try:
+                latitude = float(item.get("map_lat"))
+                longitude = float(item.get("map_lng"))
+            except (TypeError, ValueError):
+                continue
+            if south <= latitude <= north and west <= longitude <= east:
+                nearby_items.append(item)
+
+        logger.debug(
+            "BarrierFreeMap items received=%d categories=%s bbox_matches=%d",
+            len(items), received_categories, len(nearby_items),
+        )
+        return {"items": nearby_items}
     except requests.HTTPError as error:
         status_code = error.response.status_code if error.response is not None else "unknown"
         logger.warning("Barrier Free API request failed (HTTP %s); continuing without this source", status_code)
@@ -44,11 +78,9 @@ def fetch_overpass(bbox):
     [out:json][timeout:25];
     (
       node["elevator"="yes"]({s},{w},{n},{e});
-      node["amenity"="toilets"]({s},{w},{n},{e});
       node["highway"="steps"]({s},{w},{n},{e});
       way["highway"="steps"]({s},{w},{n},{e});
       node["ramp"="yes"]({s},{w},{n},{e});
-      node["wheelchair"="no"]({s},{w},{n},{e});
     );
     out body;
     >;
@@ -62,7 +94,9 @@ def fetch_overpass(bbox):
             timeout=REQUEST_TIMEOUT,
         )
         r.raise_for_status()
-        return r.json()
+        payload = r.json()
+        logger.debug("Overpass elements received=%d", len(payload.get("elements", [])))
+        return payload
     except Exception:
         logger.exception("Overpass error")
         return {}
@@ -70,25 +104,60 @@ def fetch_overpass(bbox):
 
 def normalize(barrier_json, overpass_json):
     facs = []
+    excluded_types = Counter()
     # Barrier Free
-    for it in barrier_json.get("facilities", []):
-        lat, lon = it.get("latitude"), it.get("longitude")
-        if lat and lon:
-            facs.append({"type":it.get("facilityType","facility").lower(),
-                         "name":it.get("name",""),
-                         "longitude":lon,"latitude":lat,
-                         "source":"barrierfree","status":it.get("status","")})
+    for item in barrier_json.get("items", []):
+        category = item.get("item_category") or {}
+        category_id = category.get("id")
+        if category_id == 3:
+            facility_type = "toilet"
+        elif category_id == 4:
+            facility_type = "parking"
+        else:
+            continue
+
+        latitude, longitude = item.get("map_lat"), item.get("map_lng")
+        if latitude is None or longitude is None:
+            continue
+        access_status = item.get("access_status") or {}
+        facs.append({
+            "type": facility_type,
+            "name": item.get("item_name_zh") or item.get("item_name_en") or category.get("category_name_zh", facility_type),
+            "longitude": longitude,
+            "latitude": latitude,
+            "source": "barrierfree",
+            "status": access_status.get("status_name_zh") or access_status.get("status_name_en", ""),
+            "updated_at": item.get("updated_at", ""),
+            "url": item.get("url", ""),
+        })
+
     # Overpass
     for el in overpass_json.get("elements", []):
         lat, lon = el.get("lat"), el.get("lon")
         tags = el.get("tags", {})
+        if _is_barrier_free_managed_osm_feature(tags):
+            continue
         if el.get("type") == "way":
             lat = (el.get("center") or {}).get("lat")
             lon = (el.get("center") or {}).get("lon")
         if lat is None or lon is None:
             continue
         ftype = _determine_facility_type(tags, fallback="facility")
+        if ftype in {"facility", "obstacle"}:
+            excluded_types[ftype] += 1
+            continue
         facs.append({"type":ftype,"name":tags.get("name") or ftype,
                      "longitude":lon,"latitude":lat,
                      "source":"osm","status":tags.get("status","")})
+
+    normalized_types = Counter(facility["type"] for facility in facs)
+    logger.debug(
+        "Facilities normalized by type=%s; excluded_unclassified=%d excluded_generic_obstacles=%d",
+        normalized_types,
+        excluded_types["facility"],
+        excluded_types["obstacle"],
+    )
     return facs
+
+
+# 更新記錄：2026-10-09 排除未分類 facility/obstacle，並加入 API、Overpass 和標準化數量的 debug 記錄。
