@@ -14,7 +14,7 @@ ORS_PROFILE = os.getenv("ORS_PROFILE", "wheelchair")
 
 # Barrier Free Map API (NGO)
 BARRIER_FREE_API_BASE = "https://wpc-pwa-api.barrierfreemap.hk/api"
-BARRIER_FREE_API_KEY = os.getenv("BARRIER_FREE_API_KEY", "YOUR_BARRIER_FREE_API_KEY")
+BARRIER_FREE_API_KEY = os.getenv("BARRIER_FREE_API_KEY", "f313f9dc-01bf-479d-bc57-c416800422b5")
 
 # Overpass API
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
