@@ -1,6 +1,6 @@
 # 無障礙導航專案：目前進度與詳細目標
 
-更新日期：2026-10-04
+更新日期：2026-10-09
 
 ## 一、專案摘要
 
@@ -44,9 +44,9 @@
 
 - **前端：**React 19、Vite、Mapbox GL JS；主要程式在 `frontend/src/App.jsx`，樣式在 `frontend/src/App.css`。
 - **地點搜尋：**Photon／OpenStreetMap 地理編碼服務；前端搜尋結果會套用香港經緯度矩形範圍檢查。
-- **路線服務：**Flask `POST /route` API 呼叫 Mapbox Directions `walking` profile。
+- **路線服務：**Flask `POST /route` 優先呼叫 ORS wheelchair；ORS 無可用路線時改用 Mapbox Directions `walking`，兩者都失敗才使用直線備援。
 - **地形分析：**Rasterio 讀取香港 DEM GeoTIFF；PyProj 轉換座標，GeographicLib 計算距離與坡度。
-- **設施資料：**BarrierFreeMap API 與 OpenStreetMap Overpass；兩個來源以並行方式查詢，並統一整理成設施資料。
+- **設施資料：**Barrier Free Map `/api/items` 提供無障礙廁所及傷殘人士泊車位；OpenStreetMap Overpass 提供樓梯、升降機、斜坡等其他障礙資料。
 - **前後端連線：**Vite 將 `/api` 代理至 Flask 的 `localhost:5000`。
 
 ## 五、已完成工作
@@ -59,6 +59,8 @@
 - 將 DEM 高程取樣改為 Rasterio 區塊取樣，避免每個點重讀整張約 475 MB 的 DEM。
 - 依 DEM 5 公尺解析度每 5 公尺取樣，並以 20 公尺局部線性趨勢平滑高程後計算坡度。
 - BarrierFreeMap 與 Overpass 設施查詢改為並行處理。
+- Barrier Free Map 改用文件指定的 `/api/items`，按分類 ID 3（無障礙廁所）及 4（傷殘人士泊車位）與路線範圍篩選資料。
+- OSM 資料不再提供廁所／泊車標記，避免與 Barrier Free Map 資料混用；其他障礙仍可由 OSM 提供。
 - 加入孤立 DEM 高程跳點的回歸測試。
 
 ### 前端
@@ -68,7 +70,8 @@
 - 網頁啟動時欄位保持空白，不會自動計算路線。
 - 使用 Mapbox 地圖顯示路線、坡度分段、起終點標記及設施標記。
 - 坡度顏色目前使用角度級別：綠色低於 3°、黃色 3° 至低於 6°、橙色 6° 至低於 10°、紅色 10° 以上。
-- 設施摘要及最大坡度會顯示在側欄；`toilet` 類設施使用 `images/Accessible_Toilet.png` 圖示，其他設施使用藍色標記。
+- 設施摘要及最大坡度會顯示在側欄；無障礙廁所使用 `images/Accessible_Toilet.png` 圖示，泊車位使用獨立顏色標記。
+- Barrier Free Map 標記彈窗顯示通行狀況、資料更新時間及原始資料連結。
 - 增加地點搜尋及路線請求逾時處理，避免介面永久停留在「計算中」。
 - 已調整手機版欄位、按鈕、摘要、圖例與地圖高度。
 
@@ -79,7 +82,7 @@
 
 ## 六、已完成的驗證
 
-- 後端完整測試：3 項通過，包括路線坡度測試及孤立高程跳點平滑測試。
+- 後端完整測試：13 項通過，包括 ORS 失敗時的 Mapbox 次級路由、設施來源隔離、API 正規化及路線範圍篩選。
 - 前端 `npm run lint` 已通過。
 - 前端 `npm run build` 已通過；Mapbox GL JS 仍會產生較大的 bundle 警告，但不影響建置成功。
 - 曾以「九龍塘 → 香港浸信會醫院」進行端到端 API 測試，取得 Mapbox 路線及 OSM 設施資料；外部服務狀態不同時，回應時間和設施數量會改變。
@@ -93,7 +96,7 @@
 - Mapbox Directions walking profile 沒有避開樓梯或優先使用升降機的參數。
 - 曾對截圖中的路線要求 Mapbox alternatives，但服務只回傳一條路線，因此目前後端不能保證挑選到無樓梯路線。
 - OSM 雖可標示 `highway=steps`、升降機等資料，但資料可能不完整；升降機位置存在也不代表它已被正確連接到可通行路網。
-- 已調查 OpenRouteService wheelchair profile：其文件支援 `avoid_features: ["steps"]` 及輪椅坡度、路面等限制。尚未接入，並需要 ORS API key；即使使用該 profile，是否能經由特定升降機仍取決於 OSM 樓層連接資料。
+- 已接入 OpenRouteService wheelchair profile，使用 `avoid_features: ["steps"]` 及坡度限制；「九龍塘站 → 楊建文學術樓」測試時 ORS 回報兩點間沒有可用 wheelchair route，系統改以一般步行次級路線處理。即使 ORS 有路線，能否經由特定升降機仍取決於 OSM 樓層連接資料。
 
 ### 坡度可信度
 
@@ -103,25 +106,25 @@
 
 ### 外部資料服務
 
-- BarrierFreeMap 設定目前仍是範例 API key，實測會回 401；因此該來源目前沒有設施資料。
+- Barrier Free Map API key 已設定於後端；實測 `/api/items` 回 HTTP 200。API 資料可用不代表每條路線附近都有設施。
 - Overpass 曾成功回傳設施，但也曾發生 504；設施可能因限流或服務逾時而缺漏，且 API 仍可能回 HTTP 200 的路線結果。
 - 地點搜尋、Mapbox 路線和底圖都依賴網路與有效 token。
 
 ### 範圍及備援
 
 - 香港範圍檢查使用經緯度矩形近似，不是精確的香港土地邊界。
-- Mapbox 路線失敗時的直線備援不能當成導航路線；目前回應尚未提供足夠明確的前端標示來保證使用者不會誤認。
+- ORS 無法提供 wheelchair route 時，Mapbox Walking 是一般步行次級路線，不保證輪椅可通行；前端會顯示此限制。
+- ORS 與 Mapbox 都失敗時的直線備援不能當成導航路線；前端會明確提示此路徑不是可行走道路。
 - 目前只計算及顯示一條選定路線，尚無完整的多路線比較或經使用者研究驗證的無障礙評分。
 
 ## 八、尚未完成項目與建議優先順序
 
 ### P0：落實避樓梯的路線策略
 
-1. 決定是否採用 OpenRouteService wheelchair profile 作主要路由器，Mapbox 作備援或地圖底圖。
-2. 若採用，申請並安全保存 ORS API key，將路由器設定改由環境變數讀取，不把 key 提交到版本控制。
-3. 使用 `avoid_features: ["steps"]` 及適合目標使用者的 `maximum_incline` 等輪椅限制。
-4. 驗證香港覆蓋、升降機及樓層連接資料；明確區分「避開已標記樓梯」和「確定使用某部升降機」。
-5. 若沒有可確認的無樓梯路線，顯示警告或停止宣稱為無障礙路線，不應靜默退回一般步行路線。
+1. 目前已接入 ORS wheelchair profile、`avoid_features: ["steps"]` 及坡度限制；仍需釐清特定香港路段回傳 404／無可用 wheelchair route 的原因與服務覆蓋。
+2. 驗證香港路網、升降機及樓層連接資料；明確區分「避開已標記樓梯」和「確定使用某部升降機」。
+3. ORS 無無障礙路線時，只能提供標示清楚的一般步行次級路線；不可宣稱其適合輪椅。
+4. 若沒有可確認的無樓梯路線，顯示警告，不應靜默退回直線備援或將其描述成導航路線。
 
 ### P1：改善坡度品質與風險呈現
 
@@ -132,7 +135,7 @@
 
 ### P2：提升資料完整度與可用性
 
-1. 取得有效 BarrierFreeMap API key，並確認授權、服務範圍與使用條款。
+1. 確認 Barrier Free Map API 使用條款及更新頻率；目前已接入 key 與 `/api/items`，並讀取分類 3/4。
 2. 對 Overpass 加入備援 endpoint、重試／快取策略及來源失效提示。
 3. 加入樓梯、坡道、升降機狀態等設施標記及來源／更新時間資訊。
 4. 評估使用者障礙回報、無障礙操作、語音支援及多路線比較。
@@ -176,3 +179,19 @@
 - 外部設施資料服務恢復前，設施數量及障礙狀態可能不完整；持續顯示資料不足警告，不應將空資料當成無障礙證明。
 
 //下一步將進行匯入.osm.pbf並建立可查詢的索引
+
+## 十二、2026-10-09 Barrier Free Map API 整合更新
+
+Barrier Free Map API説明:https://barrierfreemap.hk/open-data-api
+- 依官方文件改用 `GET /api/items`，以後端 `Authorization: Bearer` 認證；不再使用舊的 `/locations` 參數及錯誤欄位格式。
+- 實際 API 驗證：HTTP 200，共 1,809 筆；分類 3 無障礙廁所 1,365 筆，分類 4 傷殘人士泊車位 444 筆。
+- 依 API 的 `map_lat`、`map_lng`、`item_category`、`access_status`、`updated_at`、`url` 欄位轉成前端設施格式，並按路線 bbox 篩選。
+- 只從 Barrier Free Map 取得無障礙廁所與泊車位；Overpass 不再輸出這兩類，仍用於樓梯、升降機、斜坡等其他 OSM 設施。
+- 前端標記可區分泊車位；點擊 Barrier Free Map 設施可查看通行狀況、資料更新時間及原始頁面連結。
+- 以九龍塘附近 bbox 實測取得 21 筆資料（17 個廁所、4 個泊車位）；API 全量分類數不等於單一路線附近數量。
+- 後端完整測試 13 項通過；前端 `npm run build` 成功。建置仍有既存的大型 bundle 提示。
+
+### 後續
+
+- 依既有下一步匯入香港 `.osm.pbf` 並建立可查詢索引，減少對公共 Overpass 的依賴；索引只用於其他 OSM 障礙，廁所與泊車位仍以 Barrier Free Map 為唯一來源。
+- Overpass 仍可能 504；ORS 對特定 wheelchair route 仍可能回報無路線。坡度為 DEM 地形估算，仍須實地驗證。

@@ -50,16 +50,102 @@ def test_classify_route_obstacles_returns_clear_obstacle_summary():
     assert summary["obstacle_types"] == ["steps", "elevator", "toilet"]
 
 
+def test_barrier_free_items_normalize_toilet_and_parking_and_exclude_osm_copies():
+    barrier_items = {
+        "items": [
+            {
+                "item_name_zh": "無障礙洗手間",
+                "item_category": {"id": 3},
+                "map_lat": 22.32,
+                "map_lng": 114.17,
+                "access_status": {"status_name_zh": "輪椅通行"},
+                "updated_at": "2026-10-01T00:00:00Z",
+                "url": "https://barrierfreemap.hk/location/1",
+            },
+            {
+                "item_name_zh": "傷殘人士泊車位",
+                "item_category": {"id": 4},
+                "map_lat": 22.321,
+                "map_lng": 114.171,
+                "access_status": None,
+            },
+            {
+                "item_category": {"id": 8},
+                "map_lat": 22.322,
+                "map_lng": 114.172,
+            },
+        ]
+    }
+    overpass_data = {
+        "elements": [
+            {"type": "node", "lat": 22.32, "lon": 114.17, "tags": {"amenity": "toilets", "wheelchair": "yes"}},
+            {"type": "node", "lat": 22.32, "lon": 114.17, "tags": {"amenity": "parking", "capacity:disabled": "2"}},
+            {"type": "node", "lat": 22.32, "lon": 114.17, "tags": {"elevator": "yes"}},
+            {"type": "node", "lat": 22.32, "lon": 114.17, "tags": {"wheelchair": "no", "name": "Unclassified obstacle"}},
+            {"type": "node", "lat": 22.32, "lon": 114.17, "tags": {"name": "Unclassified facility"}},
+        ]
+    }
+
+    facilities = facilities_fetcher.normalize(barrier_items, overpass_data)
+
+    assert [(facility["type"], facility["source"]) for facility in facilities] == [
+        ("toilet", "barrierfree"),
+        ("parking", "barrierfree"),
+        ("elevator", "osm"),
+    ]
+    assert facilities[0]["status"] == "輪椅通行"
+    assert facilities[0]["updated_at"] == "2026-10-01T00:00:00Z"
+    assert facilities[0]["url"] == "https://barrierfreemap.hk/location/1"
+
+
+def test_normalize_logs_excluded_unclassified_facilities(caplog):
+    overpass_data = {
+        "elements": [
+            {"type": "node", "lat": 22.32, "lon": 114.17, "tags": {"wheelchair": "no"}},
+            {"type": "node", "lat": 22.32, "lon": 114.17, "tags": {"name": "Unknown"}},
+        ]
+    }
+
+    with caplog.at_level("DEBUG", logger="facilities_fetcher"):
+        facilities = facilities_fetcher.normalize({"items": []}, overpass_data)
+
+    assert facilities == []
+    assert "excluded_unclassified=1" in caplog.text
+    assert "excluded_generic_obstacles=1" in caplog.text
+
+
+def test_fetch_barrier_free_uses_items_endpoint_and_filters_bbox(monkeypatch):
+    response = Mock()
+    response.json.return_value = {
+        "items": [
+            {"item_category": {"id": 3}, "map_lat": 22.32, "map_lng": 114.17},
+            {"item_category": {"id": 4}, "map_lat": 22.4, "map_lng": 114.2},
+            {"item_category": {"id": 8}, "map_lat": 22.32, "map_lng": 114.17},
+        ]
+    }
+    request = Mock(return_value=response)
+    monkeypatch.setattr(facilities_fetcher, "BARRIER_FREE_API_KEY", "test-key")
+    monkeypatch.setattr(facilities_fetcher.requests, "get", request)
+
+    result = facilities_fetcher.fetch_barrier_free((22.3, 114.1, 22.35, 114.2))
+
+    assert len(result["items"]) == 1
+    request.assert_called_once()
+    assert request.call_args.args[0].endswith("/items")
+    assert request.call_args.kwargs["headers"]["Authorization"] == "Bearer test-key"
+
+
 def test_facilities_are_limited_to_route_corridor():
     route = [[114.17, 22.32], [114.18, 22.32]]
     facilities = [
         {"name": "Near", "longitude": 114.175, "latitude": 22.3202},
-        {"name": "Far", "longitude": 114.175, "latitude": 22.321},
+        {"name": "Middle", "longitude": 114.175, "latitude": 22.3215},
+        {"name": "Far", "longitude": 114.175, "latitude": 22.325},
     ]
 
     nearby = _filter_facilities_near_route(facilities, route)
 
-    assert [facility["name"] for facility in nearby] == ["Near"]
+    assert [facility["name"] for facility in nearby] == ["Near", "Middle", "Far"]
 
 
 def test_route_slopes(client):
@@ -176,3 +262,6 @@ def test_fetch_barrier_free_handles_unauthorized_response(monkeypatch, caplog):
     assert result == {}
     assert "HTTP 401" in caplog.text
     assert "Traceback" not in caplog.text
+
+
+# 更新記錄：2026-10-09 加入泛用 facility/obstacle 過濾及 debug 記錄回歸測試。
