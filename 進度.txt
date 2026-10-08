@@ -60,7 +60,8 @@
 - 依 DEM 5 公尺解析度每 5 公尺取樣，並以 20 公尺局部線性趨勢平滑高程後計算坡度。
 - BarrierFreeMap 與 Overpass 設施查詢改為並行處理。
 - Barrier Free Map 改用文件指定的 `/api/items`，按分類 ID 3（無障礙廁所）及 4（傷殘人士泊車位）與路線範圍篩選資料。
-- OSM 資料不再提供廁所／泊車標記，避免與 Barrier Free Map 資料混用；其他障礙仍可由 OSM 提供。
+- OSM 資料不再提供廁所／泊車標記，避免與 Barrier Free Map 資料混用；Overpass 未分類的 `facility` 和泛用 `obstacle` 會在正規化時排除，只保留已分類的樓梯、升降機及斜坡等資料。
+- 加入 BarrierFreeMap 收件分類數、bbox 命中數、Overpass 收件數、正規化型別及排除數的 debug 記錄；不記錄 API key。
 - 加入孤立 DEM 高程跳點的回歸測試。
 
 ### 前端
@@ -70,7 +71,8 @@
 - 網頁啟動時欄位保持空白，不會自動計算路線。
 - 使用 Mapbox 地圖顯示路線、坡度分段、起終點標記及設施標記。
 - 坡度顏色目前使用角度級別：綠色低於 3°、黃色 3° 至低於 6°、橙色 6° 至低於 10°、紅色 10° 以上。
-- 設施摘要及最大坡度會顯示在側欄；無障礙廁所使用 `images/Accessible_Toilet.png` 圖示，泊車位使用獨立顏色標記。
+- 設施摘要及最大坡度會顯示在側欄；無障礙廁所與泊車位分別使用 `images/Accessible_Toilet.png`、`images/Accessible_Parking.png`，並可透過獨立按鈕顯示／隱藏。圖示 URL 帶版本參數以避免同名圖片快取。
+- 前端只繪製已分類設施，隱藏未知類型；debug console 記錄收到、分類及隱藏的 marker 數量。
 - Barrier Free Map 標記彈窗顯示通行狀況、資料更新時間及原始資料連結。
 - 增加地點搜尋及路線請求逾時處理，避免介面永久停留在「計算中」。
 - 已調整手機版欄位、按鈕、摘要、圖例與地圖高度。
@@ -82,7 +84,7 @@
 
 ## 六、已完成的驗證
 
-- 後端完整測試：13 項通過，包括 ORS 失敗時的 Mapbox 次級路由、設施來源隔離、API 正規化及路線範圍篩選。
+- 後端完整測試：14 項通過，包括 ORS 失敗時的 Mapbox 次級路由、設施來源隔離、API 正規化、未分類設施排除及 debug 記錄。
 - 前端 `npm run lint` 已通過。
 - 前端 `npm run build` 已通過；Mapbox GL JS 仍會產生較大的 bundle 警告，但不影響建置成功。
 - 曾以「九龍塘 → 香港浸信會醫院」進行端到端 API 測試，取得 Mapbox 路線及 OSM 設施資料；外部服務狀態不同時，回應時間和設施數量會改變。
@@ -107,7 +109,7 @@
 ### 外部資料服務
 
 - Barrier Free Map API key 已設定於後端；實測 `/api/items` 回 HTTP 200。API 資料可用不代表每條路線附近都有設施。
-- Overpass 曾成功回傳設施，但也曾發生 504；設施可能因限流或服務逾時而缺漏，且 API 仍可能回 HTTP 200 的路線結果。
+- Overpass 曾成功回傳設施，也曾發生 504；逾時時仍會回傳 BarrierFreeMap 設施與成功的路線，但樓梯/升降機等 OSM 標記可能缺漏，debug log 會記錄失敗。
 - 地點搜尋、Mapbox 路線和底圖都依賴網路與有效 token。
 
 ### 範圍及備援
@@ -189,9 +191,28 @@ Barrier Free Map API説明:https://barrierfreemap.hk/open-data-api
 - 只從 Barrier Free Map 取得無障礙廁所與泊車位；Overpass 不再輸出這兩類，仍用於樓梯、升降機、斜坡等其他 OSM 設施。
 - 前端標記可區分泊車位；點擊 Barrier Free Map 設施可查看通行狀況、資料更新時間及原始頁面連結。
 - 以九龍塘附近 bbox 實測取得 21 筆資料（17 個廁所、4 個泊車位）；API 全量分類數不等於單一路線附近數量。
-- 後端完整測試 13 項通過；前端 `npm run build` 成功。建置仍有既存的大型 bundle 提示。
+- 後端完整測試已更新至 14 項通過；前端 `npm run build` 成功。建置仍有既存的大型 bundle 提示。
 
 ### 後續
 
 - 依既有下一步匯入香港 `.osm.pbf` 並建立可查詢索引，減少對公共 Overpass 的依賴；索引只用於其他 OSM 障礙，廁所與泊車位仍以 Barrier Free Map 為唯一來源。
 - Overpass 仍可能 504；ORS 對特定 wheelchair route 仍可能回報無路線。坡度為 DEM 地形估算，仍須實地驗證。
+
+## 十三、2026-10-09 設施標記與 Debug 更新
+
+### 未分類設施處理
+
+- Overpass 查詢移除 `wheelchair=no` 泛用 POI 條件；設施正規化時排除未分類 `facility` 和泛用 `obstacle`，不再將它們送到前端或顯示為通用圓點。
+- 前端另設分類白名單作為防護，只繪製廁所、泊車位、樓梯、升降機及斜坡等已知類型。
+- 新增 debug 記錄：BarrierFreeMap 原始筆數及分類、bbox 命中數、Overpass 回傳筆數、標準化類型及被排除數；前端記錄收到/分類/隱藏的 marker 數量。日誌不含 API key。
+
+### 圖示與顯示控制
+
+- 無障礙廁所和泊車位分別使用 `Accessible_Toilet.png`、`Accessible_Parking.png`，圖示 URL 加入版本參數以避免瀏覽器沿用舊圖片快取。
+- 廁所與泊車位各有獨立顯示／隱藏按鈕；瀏覽器測試確認泊車 marker 可由 19 個切換至 0 個，廁所仍維持 75 個，恢復顯示後泊車 marker 回到 19 個。
+
+### 驗證結果
+
+- BarrierFreeMap 實測收到 1,809 筆資料（分類 3：1,365；分類 4：444）；香港站至香港大學路線範圍命中 94 筆（75 個廁所、19 個泊車位）。
+- Overpass 成功時曾回傳 4,024 個元素，排除 2,970 個未分類 `facility`，保留 3 個樓梯及 1 部升降機；合計 route response 98 筆。Overpass 504 時 response 為 94 筆，只有 BarrierFreeMap 的廁所/泊車位，數量差異是外部服務逾時所致。
+- 後端完整測試 14 項通過；前端 `npm run build` 成功。瀏覽器確認兩種 PNG 均載入成功，且獨立 toggle 行為正常。
