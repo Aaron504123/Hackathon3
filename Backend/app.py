@@ -16,6 +16,7 @@ logging.basicConfig(level=logging.INFO)
 MAPBOX_URL = "https://api.mapbox.com/directions/v5/mapbox/walking"
 ORS_URL = f"{ORS_API_BASE}/v2/directions/{ORS_PROFILE}/json"
 FACILITY_ROUTE_RADIUS_METERS = 1000
+OSM_DISPLAY_ROUTE_RADIUS_METERS = 100
 
 
 def build_fallback_route(start, end, steps=25):
@@ -72,16 +73,31 @@ def _distance_to_route(route_coords, point):
     return minimum_distance
 
 
-def _filter_facilities_near_route(facilities, route_coords):
+def _filter_facilities_near_route(facilities, route_coords, radius_meters=FACILITY_ROUTE_RADIUS_METERS):
     nearby_facilities = []
     for facility in facilities:
         longitude = facility.get("longitude")
         latitude = facility.get("latitude")
         if longitude is None or latitude is None:
             continue
-        if _distance_to_route(route_coords, [longitude, latitude]) <= FACILITY_ROUTE_RADIUS_METERS:
+        if _distance_to_route(route_coords, [longitude, latitude]) <= radius_meters:
             nearby_facilities.append(facility)
     return nearby_facilities
+
+
+def _filter_facilities_for_map(facilities, route_coords):
+    barrier_free_facilities = [
+        facility for facility in facilities if facility.get("source") == "barrierfree"
+    ]
+    other_facilities = [
+        facility for facility in facilities if facility.get("source") != "barrierfree"
+    ]
+    nearby_osm_facilities = _filter_facilities_near_route(
+        other_facilities,
+        route_coords,
+        radius_meters=OSM_DISPLAY_ROUTE_RADIUS_METERS,
+    )
+    return barrier_free_facilities + nearby_osm_facilities
 
 
 def normalize_route_geometry(route):
@@ -235,6 +251,7 @@ def route():
     route_source = "fallback"
     route_obstacles = []
     mapbox_failure = None
+    fetched_facilities = None
 
     try:
         ors_payload = query_ors_routes(start, end)
@@ -244,6 +261,7 @@ def route():
             pad = 0.01
             bbox = [min(lats) - pad, min(lons) - pad, max(lats) + pad, max(lons) + pad]
             obstacles = fetch_facilities_nearby(bbox)
+            fetched_facilities = obstacles
             selected_route = choose_preferred_route(routes, obstacles)
             if selected_route is not None:
                 coords = normalize_route_geometry(selected_route)
@@ -283,8 +301,10 @@ def route():
         max(start_lat, end_lat) + pad,
         max(start_lon, end_lon) + pad,
     ]
-    facilities = fetch_facilities_nearby(bbox)
-    nearby_route_facilities = _filter_facilities_near_route(facilities, coords)
+    if fetched_facilities is None:
+        fetched_facilities = fetch_facilities_nearby(bbox)
+    nearby_route_facilities = _filter_facilities_near_route(fetched_facilities, coords)
+    facilities = _filter_facilities_for_map(fetched_facilities, coords)
 
     route_facility_summary = classify_route_obstacles(facilities)
     max_slope = max([abs(s["slope_deg"]) for s in segments if s["slope_deg"] is not None], default=None)
@@ -322,3 +342,7 @@ def route():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
+
+# 更新記錄：2026-10-09 地圖只顯示路線 100 公尺內 OSM 障礙，保留 bbox 內全部 BarrierFreeMap 設施。
+# 更新記錄：2026-10-09 ORS 選路已取得的設施列表會供 response 共用，避免同一路線重複呼叫 BarrierFreeMap/本地 OSM 索引。

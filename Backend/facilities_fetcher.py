@@ -1,6 +1,7 @@
 import requests, logging
 from collections import Counter
 from config import BARRIER_FREE_API_BASE, BARRIER_FREE_API_KEY, OVERPASS_URL, REQUEST_TIMEOUT
+from osm_index import DEFAULT_INDEX_PATH, DEFAULT_PBF_PATH, is_index_current, query_osm_index
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
@@ -73,6 +74,19 @@ def fetch_barrier_free(bbox):
 
 
 def fetch_overpass(bbox):
+    if is_index_current(DEFAULT_INDEX_PATH, DEFAULT_PBF_PATH):
+        try:
+            elements = query_osm_index(bbox, DEFAULT_INDEX_PATH)
+            logger.debug("Local OSM index matches bbox; elements=%d", len(elements))
+            return {"elements": elements}
+        except Exception:
+            logger.exception("Local OSM index query failed; falling back to Overpass")
+    else:
+        logger.warning(
+            "Local OSM index is missing or stale; using Overpass. Build it with: "
+            "python build_osm_index.py"
+        )
+
     s,w,n,e = bbox
     q = f"""
     [out:json][timeout:25];
@@ -161,3 +175,4 @@ def normalize(barrier_json, overpass_json):
 
 
 # 更新記錄：2026-10-09 排除未分類 facility/obstacle，並加入 API、Overpass 和標準化數量的 debug 記錄。
+# 更新記錄：2026-10-09 優先使用本地香港 PBF SQLite 索引查詢 OSM 設施，索引缺失/過期時才 fallback Overpass。

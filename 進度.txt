@@ -84,7 +84,7 @@
 
 ## 六、已完成的驗證
 
-- 後端完整測試：14 項通過，包括 ORS 失敗時的 Mapbox 次級路由、設施來源隔離、API 正規化、未分類設施排除及 debug 記錄。
+- 後端完整測試：17 項通過，包括 ORS 失敗時的 Mapbox 次級路由、設施來源隔離、API 正規化、未分類設施排除、本地 PBF 空間查詢及 debug 記錄。
 - 前端 `npm run lint` 已通過。
 - 前端 `npm run build` 已通過；Mapbox GL JS 仍會產生較大的 bundle 警告，但不影響建置成功。
 - 曾以「九龍塘 → 香港浸信會醫院」進行端到端 API 測試，取得 Mapbox 路線及 OSM 設施資料；外部服務狀態不同時，回應時間和設施數量會改變。
@@ -109,7 +109,7 @@
 ### 外部資料服務
 
 - Barrier Free Map API key 已設定於後端；實測 `/api/items` 回 HTTP 200。API 資料可用不代表每條路線附近都有設施。
-- Overpass 曾成功回傳設施，也曾發生 504；逾時時仍會回傳 BarrierFreeMap 設施與成功的路線，但樓梯/升降機等 OSM 標記可能缺漏，debug log 會記錄失敗。
+- 本地 PBF 索引有效時，OSM 障礙查詢不依賴 Overpass；索引缺失、過期或讀取失敗時才 fallback Overpass，屆時仍可能遇到 504 並缺少 OSM 標記。
 - 地點搜尋、Mapbox 路線和底圖都依賴網路與有效 token。
 
 ### 範圍及備援
@@ -138,7 +138,7 @@
 ### P2：提升資料完整度與可用性
 
 1. 確認 Barrier Free Map API 使用條款及更新頻率；目前已接入 key 與 `/api/items`，並讀取分類 3/4。
-2. 對 Overpass 加入備援 endpoint、重試／快取策略及來源失效提示。
+2. 已匯入香港 OSM PBF 並建立 SQLite RTree 本地索引；索引缺失/過期時仍會 fallback Overpass，後續可評估 endpoint 備援、重試和索引更新排程。
 3. 加入樓梯、坡道、升降機狀態等設施標記及來源／更新時間資訊。
 4. 評估使用者障礙回報、無障礙操作、語音支援及多路線比較。
 
@@ -191,12 +191,12 @@ Barrier Free Map API説明:https://barrierfreemap.hk/open-data-api
 - 只從 Barrier Free Map 取得無障礙廁所與泊車位；Overpass 不再輸出這兩類，仍用於樓梯、升降機、斜坡等其他 OSM 設施。
 - 前端標記可區分泊車位；點擊 Barrier Free Map 設施可查看通行狀況、資料更新時間及原始頁面連結。
 - 以九龍塘附近 bbox 實測取得 21 筆資料（17 個廁所、4 個泊車位）；API 全量分類數不等於單一路線附近數量。
-- 後端完整測試已更新至 14 項通過；前端 `npm run build` 成功。建置仍有既存的大型 bundle 提示。
+- 後端完整測試已更新至 17 項通過；前端 `npm run build` 成功。建置仍有既存的大型 bundle 提示。
 
 ### 後續
 
 - 依既有下一步匯入香港 `.osm.pbf` 並建立可查詢索引，減少對公共 Overpass 的依賴；索引只用於其他 OSM 障礙，廁所與泊車位仍以 Barrier Free Map 為唯一來源。
-- Overpass 仍可能 504；ORS 對特定 wheelchair route 仍可能回報無路線。坡度為 DEM 地形估算，仍須實地驗證。
+- 本地 PBF 索引已降低日常查詢對 Overpass 的依賴；索引 fallback 時 Overpass 仍可能 504。ORS 對特定 wheelchair route 仍可能回報無路線。坡度為 DEM 地形估算，仍須實地驗證。
 
 ## 十三、2026-10-09 設施標記與 Debug 更新
 
@@ -215,4 +215,21 @@ Barrier Free Map API説明:https://barrierfreemap.hk/open-data-api
 
 - BarrierFreeMap 實測收到 1,809 筆資料（分類 3：1,365；分類 4：444）；香港站至香港大學路線範圍命中 94 筆（75 個廁所、19 個泊車位）。
 - Overpass 成功時曾回傳 4,024 個元素，排除 2,970 個未分類 `facility`，保留 3 個樓梯及 1 部升降機；合計 route response 98 筆。Overpass 504 時 response 為 94 筆，只有 BarrierFreeMap 的廁所/泊車位，數量差異是外部服務逾時所致。
-- 後端完整測試 14 項通過；前端 `npm run build` 成功。瀏覽器確認兩種 PNG 均載入成功，且獨立 toggle 行為正常。
+- 後端完整測試 17 項通過；前端 `npm run build` 成功。瀏覽器確認兩種 PNG 均載入成功，且獨立 toggle 行為正常。
+
+## 十四、2026-10-09 香港 OSM PBF 本地索引
+
+- 專案根目錄的 `hong-kong-261003.osm.pbf`（37,607,921 bytes）已由 PyOsmium 4.3.1 完整解析；新增依賴固定為 `osmium==4.3.1`。
+- 新增 `Backend/build_osm_index.py` 和 `Backend/osm_index.py`，串流擷取 `highway=steps` ways/nodes、`elevator=yes` 及 `ramp=yes`，將設施座標、OSM tags 和 PBF 檔案版本資訊存進 `Backend/data/hong-kong-osm.sqlite3`，並建立 SQLite RTree bbox 索引。
+- 真實 PBF 建置結果：11,430 個樓梯要素、16 個升降機、7 個斜坡。香港站至香港大學附近 bbox 查得 1,054 個 OSM 元素，標準化為 1,047 個樓梯及 4 部升降機。
+- 後端 `fetch_overpass` 現在會優先查詢與 PBF 大小/修改時間相符的本地索引；索引缺失、過期或查詢失敗才呼叫 Overpass。BarrierFreeMap 仍是廁所及泊車位唯一資料來源。
+- 地圖保留路線 bbox 內所有 BarrierFreeMap 設施；PBF 的 OSM 障礙只顯示實際路線 100 公尺內的要素，避免香港站至港大測試 bbox 內超過千筆樓梯資料淹沒地圖或造成遠處障礙誤報。
+- Live `POST /route` 已確認 debug log 顯示本地索引命中；ORS 路線回傳 260 筆設施：166 個 100 公尺內樓梯、75 個廁所、19 個泊車位，未含 `facility`/`obstacle` 泛用類型。
+- 加入 bbox 篩選、本地索引優先策略及 OSM 路線距離限制測試；完整後端測試 17 項通過，前端 build 成功。操作手冊已補上首次建置與 PBF 更新後重建方式。
+
+## 十五、2026-10-09 路線資料查詢效能優化
+
+- Debug log 顯示 ORS 路線流程會先查設施供候選路線評分，再以相同 bbox 重複查一次供 response，造成 BarrierFreeMap API 與本地 OSM RTree 雙重查詢。
+- 現在 ORS 分支會快取並重用第一次設施結果；若 ORS 沒有進入設施查詢，才於 route response 階段查一次。
+- 更新回歸測試確認 BarrierFreeMap 與 OSM provider 對一次 ORS 路線各呼叫一次；此優化避免每次 ORS 成功時多打一個 BarrierFreeMap HTTP request 及一次本地 bbox 查詢。
+- Live route 重測仍回 HTTP 200、260 筆設施；Flask debug log 確認每個 ORS route request 只有一組本地索引命中與一組 BarrierFreeMap 收件記錄，查詢量減半。完整後端測試 17 項、前端 lint/build 均通過。
