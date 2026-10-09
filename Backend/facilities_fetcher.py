@@ -7,7 +7,14 @@ logger.setLevel(logging.DEBUG)
 
 
 def _determine_facility_type(tags, fallback="facility"):
-    if tags.get("elevator") == "yes":
+    railway = str(tags.get("railway", "")).lower()
+    public_transport = str(tags.get("public_transport", "")).lower()
+
+    if public_transport == "station_exit":
+        return "station_exit"
+    if railway in {"subway_entrance", "station_entrance"}:
+        return "station_exit"
+    if tags.get("elevator") == "yes" or tags.get("highway") == "elevator":
         return "elevator"
     if tags.get("highway") == "steps":
         return "steps"
@@ -92,9 +99,13 @@ def fetch_overpass(bbox):
     [out:json][timeout:25];
     (
       node["elevator"="yes"]({s},{w},{n},{e});
+      node["highway"="elevator"]({s},{w},{n},{e});
       node["highway"="steps"]({s},{w},{n},{e});
       way["highway"="steps"]({s},{w},{n},{e});
       node["ramp"="yes"]({s},{w},{n},{e});
+      node["public_transport"="station_exit"]({s},{w},{n},{e});
+      node["railway"="subway_entrance"]({s},{w},{n},{e});
+      node["railway"="station_entrance"]({s},{w},{n},{e});
     );
     out body;
     >;
@@ -160,9 +171,14 @@ def normalize(barrier_json, overpass_json):
         if ftype in {"facility", "obstacle"}:
             excluded_types[ftype] += 1
             continue
-        facs.append({"type":ftype,"name":tags.get("name") or ftype,
-                     "longitude":lon,"latitude":lat,
-                     "source":"osm","status":tags.get("status","")})
+        facs.append({
+            "type": ftype,
+            "name": tags.get("name") or tags.get("name:zh") or tags.get("ref") or ftype,
+            "longitude": lon,
+            "latitude": lat,
+            "source": "osm",
+            "status": tags.get("status", ""),
+        })
 
     normalized_types = Counter(facility["type"] for facility in facs)
     logger.debug(

@@ -1,6 +1,6 @@
 import rasterio
 from config import DEM_PATH
-from dem_processing import compute_slopes, smooth_elevations
+from dem_processing import compute_slopes, correct_structural_elevations, smooth_elevations
 
 def main():
     # 打開 DEM 檔案
@@ -31,6 +31,27 @@ def test_smoothing_reduces_isolated_elevation_jumps():
 
     assert raw_max > 10
     assert smoothed_max < 10
+
+
+def test_structural_correction_flattens_bridge_deck():
+    # 模擬天橋下地面下陷：高程 40 -> 14 -> 40，橋面本身應接近水平
+    lons = [114.17 + index * 0.00005 for index in range(8)]
+    samples = [(lon, 22.32, elevation) for lon, elevation in zip(lons, [40, 40, 40, 14, 14, 40, 40, 40])]
+    bridge = {"structure_type": "bridge", "coords": [[22.32, lons[2]], [22.32, lons[5]]]}
+
+    corrected, indices = correct_structural_elevations(samples, [bridge], threshold_m=2.0)
+    slopes = compute_slopes(corrected)
+
+    assert indices == {2, 3, 4, 5}
+    assert max(abs(segment["slope_deg"]) for segment in slopes) < 5
+
+
+def test_structural_correction_without_structures_keeps_samples():
+    samples = [(114.17 + index * 0.00005, 22.32, 10 + index) for index in range(5)]
+    corrected, indices = correct_structural_elevations(samples, [])
+
+    assert corrected == samples
+    assert indices == set()
 
 if __name__ == "__main__":
     main()

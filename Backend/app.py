@@ -7,7 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 from geographiclib.geodesic import Geodesic
 
 from config import MAPBOX_TOKEN, ORS_API_KEY, ORS_API_BASE, ORS_PROFILE, SAMPLE_DISTANCE_M
-from dem_processing import sample_elevations, smooth_elevations, compute_slopes
+from dem_processing import sample_elevations, smooth_elevations, compute_slopes, correct_structural_elevations
+from osm_index import query_structure_ways
 from facilities_fetcher import fetch_barrier_free, fetch_overpass, normalize
 
 app = Flask(__name__)
@@ -284,9 +285,23 @@ def route():
             coords = build_fallback_route(start, end)
 
     # DEM slope calculation
-    samples = smooth_elevations(
-        sample_elevations(coords, sample_distance_m=SAMPLE_DISTANCE_M)
-    )
+    raw_samples = sample_elevations(coords, sample_distance_m=SAMPLE_DISTANCE_M)
+    try:
+        route_lons = [point[0] for point in coords]
+        route_lats = [point[1] for point in coords]
+        structure_bbox = [
+            min(route_lats) - 0.001,
+            min(route_lons) - 0.001,
+            max(route_lats) + 0.001,
+            max(route_lons) + 0.001,
+        ]
+        structures = query_structure_ways(structure_bbox)
+        raw_samples, corrected_indices = correct_structural_elevations(raw_samples, structures)
+        if corrected_indices:
+            logging.info("Structural elevation correction applied to %d samples", len(corrected_indices))
+    except Exception as correction_error:
+        logging.warning("Structural elevation correction skipped: %s", correction_error)
+    samples = smooth_elevations(raw_samples)
     segments = compute_slopes(samples)
     elevations = [float(elevation) for _, _, elevation in samples if elevation is not None]
     slopes = [float(segment["slope_deg"]) for segment in segments if segment.get("slope_deg") is not None]

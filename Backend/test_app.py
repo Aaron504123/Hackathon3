@@ -101,6 +101,29 @@ def test_barrier_free_items_normalize_toilet_and_parking_and_exclude_osm_copies(
     assert facilities[0]["url"] == "https://barrierfreemap.hk/location/1"
 
 
+def test_normalize_keeps_mtr_station_exit_from_osm():
+    overpass_data = {
+        "elements": [
+            {
+                "type": "node",
+                "lat": 22.32,
+                "lon": 114.17,
+                "tags": {
+                    "railway": "subway_entrance",
+                    "public_transport": "station_exit",
+                    "name": "港鐵站出口 A",
+                    "ref": "A",
+                },
+            }
+        ]
+    }
+
+    facilities = facilities_fetcher.normalize({"items": []}, overpass_data)
+
+    assert any(facility["type"] == "station_exit" and facility["source"] == "osm" for facility in facilities)
+    assert any(facility["name"] == "港鐵站出口 A" for facility in facilities)
+
+
 def test_normalize_logs_excluded_unclassified_facilities(caplog):
     overpass_data = {
         "elements": [

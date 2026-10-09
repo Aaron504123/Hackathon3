@@ -219,6 +219,22 @@ Barrier Free Map API説明:https://barrierfreemap.hk/open-data-api
 
 ## 十四、2026-10-09 香港 OSM PBF 本地索引
 
+### 2026-10-09 追加：港鐵站出入口顯示修正
+
+- 已重建正式 OSM SQLite 索引，並確認本地資料庫中新增 `station_exit` 類型：`station_exit_count = 648`。
+- 已在 `Backend/osm_index.py`、`Backend/facilities_fetcher.py` 補上 `station_exit` / `station_entrance` / `subway_entrance` / `public_transport=station_exit` 的正規化與索引提取邏輯，避免再被本地索引過舊掩蓋。
+- 已在前端 `frontend/src/App.jsx` 與 `frontend/src/App.css` 加入港鐵站出口標記顯示與樣式，且維持原本廁所、泊車位、樓梯等設施顯示不受影響。
+- 已對此行為新增回歸測試，覆蓋 `station_exit` 仍會被保留在 route response 中。
+- 已完成實際 live API 驗證：`POST /route` 回傳 `facility_types {'toilet': 41, 'parking': 20, 'steps': 4, 'station_exit': 8}`，證明港鐵站出入口已出現在路線設施中，且原有設施類型未被破壞。
+- 已重新啟動 Flask 後端，前端也已啟動：Vite 可在 `http://localhost:5174/` 供使用者查看。
+
+### 下一步方案
+
+1. 在瀏覽器中以 `http://localhost:5174/` 檢視路線，確認站出口標記在地圖上顯示為藍色圓點，並確認其不影響原有廁所與泊車位圖示。
+2. 若需要更進一步優化，可在前端詳細設定站出口標示名稱或跳出視窗內容，讓使用者更容易辨識「出口」與「入口」的實際位置。
+3. 後續若要提高實用性，可再補上更完整的 MTR 出口分類（例如 `entrance`、`subway_entrance`、`station_entrance`）以及圖示層級設計與資料來源標註。
+4. 若未來再次重建 OSM 索引，請保留此 `station_exit` 正規化邏輯，並在更新索引後再做一次 API/前端檢查，避免因索引過時又看不到港鐵站出口。
+
 - 專案根目錄的 `hong-kong-261003.osm.pbf`（37,607,921 bytes）已由 PyOsmium 4.3.1 完整解析；新增依賴固定為 `osmium==4.3.1`。
 - 新增 `Backend/build_osm_index.py` 和 `Backend/osm_index.py`，串流擷取 `highway=steps` ways/nodes、`elevator=yes` 及 `ramp=yes`，將設施座標、OSM tags 和 PBF 檔案版本資訊存進 `Backend/data/hong-kong-osm.sqlite3`，並建立 SQLite RTree bbox 索引。
 - 真實 PBF 建置結果：11,430 個樓梯要素、16 個升降機、7 個斜坡。香港站至香港大學附近 bbox 查得 1,054 個 OSM 元素，標準化為 1,047 個樓梯及 4 部升降機。
@@ -233,3 +249,122 @@ Barrier Free Map API説明:https://barrierfreemap.hk/open-data-api
 - 現在 ORS 分支會快取並重用第一次設施結果；若 ORS 沒有進入設施查詢，才於 route response 階段查一次。
 - 更新回歸測試確認 BarrierFreeMap 與 OSM provider 對一次 ORS 路線各呼叫一次；此優化避免每次 ORS 成功時多打一個 BarrierFreeMap HTTP request 及一次本地 bbox 查詢。
 - Live route 重測仍回 HTTP 200、260 筆設施；Flask debug log 確認每個 ORS route request 只有一組本地索引命中與一組 BarrierFreeMap 收件記錄，查詢量減半。完整後端測試 17 項、前端 lint/build 均通過。
+
+## 十六、2026-10-09 港鐵站出入口資料來源與索引修正
+
+### 問題確認
+
+- Barrier Free Map API 不提供港鐵站出入口（站口／出口）資料；目前該 API 僅涵蓋無障礙廁所及傷殘人士泊車位等分類。
+- 實際可用資料來源為 OpenStreetMap（OSM），其中常見的標記包括 `railway=subway_entrance`、`railway=station_entrance` 與 `public_transport=station_exit`。
+- 目前本地 `Backend/data/hong-kong-osm.sqlite3` 的索引仍為舊版本，內容僅有 `steps`、`elevator`、`ramp`，沒有 `station_exit`，因此前端路線地圖上看不到港鐵站出口標記。
+
+### 已修正內容
+
+- 擴充 OSM 設施辨識邏輯，將站入口／站出口納入 `station_exit` 類型。
+- 更新本地 PBF 索引建構邏輯，以保留 OSM 的站出入口資料。
+- 在前端加入 `station_exit` 類型的顏色、標籤與地圖標記顯示，並標示為「港鐵站出入口」。
+- 新增回歸測試，確認 OSM 的站出入口會被保留且能進入 route response。
+
+### 驗證結果
+
+- 後端測試已通過：17 項通過。
+- 前端 build 已成功：`npm run build` 成功。
+- 另外在新建的測試索引中，實際驗證到 `station_exit` 數量為 648 筆，證明新資料抽取邏輯可正常產生站出口資料。
+
+### 下一步方案
+
+1. 立即重建正式索引：
+   - 關閉任何仍持有 `Backend/data/hong-kong-osm.sqlite3` 鎖定的 Flask 進程。
+   - 執行 `python Backend/build_osm_index.py` 重建正式索引。
+2. 啟動/重啟後端與前端，確認路線地圖中出現港鐵站出入口標記。
+3. 在實際路線上測試至少 2-3 個地鐵站附近路線，確認站出口標記與路線距離、地圖位置一致。
+4. 進一步優化：
+   - 站出口可增加 `ref` / `name` 顯示。
+   - 若站口資料稀少或缺失，顯示「資料來源：OSM，可能不完整」說明。
+   - 考慮在啟動時自動檢查索引是否過期，若過期則提示重建。
+5. 後續擴張：可把站出口、升降機、樓梯、斜坡與無障礙廁所做成更明晰的設施層級分組，讓使用者能更容易判斷路線風險。
+
+### 結語
+
+本次修正已確認：港鐵站出入口不是 Barrier Free Map 的資料，而且前端看不到的真正原因是舊 OSM 索引尚未重建。修正邏輯已完成，下一步只需重建索引並實際檢查站出口在路線上的可視化結果即可。
+
+## 十七、2026-10-09 天橋假坡度修正
+
+- 問題：九龍塘站 → 楊建文學術樓路線經過 Junction Rd 跨窩打老道天橋時，橋面段顯示 ±49° 的虛假陡坡。
+- 根因：DEM 是裸地地形模型（DTM），只含地面高程，沒有橋面、隧道等結構。路線經過天橋時取樣到的是橋下道路／路塹的地面高程（實測橋中點下 36m vs 道路 14–15m），高程差在短距離內被當成坡度計算。
+- 修正：
+  - [Backend/osm_index.py](Backend/osm_index.py)：索引新增 `structure_ways` 資料表，從 PBF 提取 `bridge=*` / `tunnel=*` 道路的完整線幾何（bridge 17,862 條、tunnel 5,563 條），並提供 `query_structure_ways()` 查詢；舊索引缺表時優雅降級。
+  - [Backend/dem_processing.py](Backend/dem_processing.py)：新增 `correct_structural_elevations()`，把落在結構線 12 公尺內的連續取樣點高程改為結構兩端地面高程的線性內插，近似水平橋面；隧道段同理修正。
+  - [Backend/app.py](Backend/app.py)：在 DEM 取樣後、平滑前套用結構修正，失敗時只記警告不影響路線輸出。
+- 驗證結果：
+  - 九龍塘站 → 楊建文學術樓：橋面段坡度由 ±49° 降至約 2°，整條路線最陡僅 2.4°。
+  - 香港站 → 香港大學：最大坡度由 17.8° 降至 12.4°，設施統計（toilet 74 / parking 18 / station_exit 23 / steps 166）不變。
+  - 後端回歸測試 20 項全部通過（新增 2 項結構修正測試）。
+- 限制：修正依賴 OSM `bridge`/`tunnel` 標籤覆蓋率；無標籤的結構仍會出現假坡度。橋面實際有縱坡時，線性內插只是近似值。
+
+## 十八、2026-10-09 目前網站功能總覽與標記更新
+
+### 目前網站能做到的效果
+
+1. **地點搜尋**：輸入中文／英文地點名稱（如「香港站」「香港大學」），經 Photon 地理編碼取得座標，失敗時自動切換 Nominatim 備援；只接受香港範圍內的結果。
+2. **路線計算**：優先使用 OpenRouteService wheelchair profile（避樓梯、坡度限制）；ORS 無路線時改用 Mapbox Walking 並顯示「未保證適合輪椅通行」警告；兩者皆失敗才用直線備援並明確提示非可行走道路。
+3. **坡度分析**：沿路線每 5 公尺取樣本地 DEM 高程，20 公尺平滑後計算坡度；地圖以綠（<3°）、黃（3–6°）、橙（6–10°）、紅（≥10°）分段著色。天橋／隧道段經 OSM 結構修正，不再出現虛假陡坡。
+4. **設施標記**（可各自獨立顯示／隱藏）：
+   - 無障礙廁所：`Accessible_Toilet.png` 圖示，資料來自 Barrier Free Map，彈窗顯示通行狀況、更新時間及原始連結。
+   - 傷殘人士泊車位：`Accessible_Parking.png` 圖示，資料來自 Barrier Free Map。
+   - 樓梯：`stair.png` 圖示，資料來自本地 OSM 索引（不再顯示紅色圓點）。
+   - 港鐵站出入口：`entrance.png` 圖示，資料來自本地 OSM 索引（`railway=subway_entrance` 等標籤）。
+   - 升降機／斜坡：綠色／橙色圓點，資料來自本地 OSM 索引。
+5. **障礙狀態提示**：側欄顯示「有樓梯／無明顯樓梯」「有升降機／未確認升降機」徽章；路線沿線有已標記樓梯時顯示警告。
+6. **摘要資訊**：設施數量、路線 100 公尺內設施數、最大坡度（DEM 估算值）。
+7. **本地資料索引**：香港 OSM PBF 已建立 SQLite RTree 索引（11,430 樓梯、16 升降機、7 斜坡、648 站出入口、17,862 橋、5,563 隧道），日常查詢不依賴 Overpass。
+8. **手機版面**：欄位、按鈕、摘要、圖例與地圖高度已針對手機螢幕調整。
+
+### 2026-10-09 標記顯示更新
+
+- 新增「顯示／隱藏樓梯」和「顯示／隱藏港鐵站出入口」兩個按鈕，與原有廁所、泊車位開關並列；四類設施可獨立切換、互不影響。
+- 移除樓梯的紅色圓點繪製（原本與 stair.png 圖示重疊），樓梯只保留圖片標記；升降機及斜坡圓點維持不變。
+- 港鐵站出入口圖示由藍色 CSS 圓點改為 `images/entrance.png` 圖片（36px 帶陰影），與廁所／泊車位圖示風格一致；圖示版本號更新至 `20261009-3` 避免快取沿用舊圖。
+- 前端 `npm run build` 通過；後端回歸測試維持 20 項全部通過。
+
+### 實測路線結果（2026-10-09）
+
+| 路線 | 路線來源 | 最大坡度 | 設施統計 |
+|---|---|---|---|
+| 香港站 → 香港大學 | ORS wheelchair | 12.4° | 廁所 74、泊車位 18、站出入口 23、樓梯 166 |
+| 九龍塘站 → 楊建文學術樓 | Mapbox Walking（ORS 無輪椅路線） | 2.4°（天橋修正後） | 廁所 41、泊車位 20、站出入口 8、樓梯 4 |
+
+### 仍存在的限制
+
+- ORS wheelchair 對部分香港路段（如九龍塘站一帶）回報無可用路線，需退回一般步行路線。
+- 坡度為 DEM 地形估算，雖已修正天橋／隧道假坡度，仍可能與行人路實際坡度有差異，須實地驗證。
+- 設施資料覆蓋依賴 Barrier Free Map 與 OSM 社群標記，不能保證完整。
+
+## 十九、2026-10-09 升降機標記缺失排查與修正
+
+### 根因
+
+- 本地 OSM 索引只提取 `elevator=yes` 標籤，全港僅 16 個此類要素，所以地圖上幾乎看不到升降機。
+- OSM 標準的升降機標記其實是 `highway=elevator`；實測香港 PBF 中有 **1,291** 個 `highway=elevator` 節點，但舊邏輯完全沒有提取。
+
+### 修正內容
+
+- [Backend/osm_index.py](Backend/osm_index.py)：`_facility_type()` 加入 `highway=elevator` 識別。
+- [Backend/facilities_fetcher.py](Backend/facilities_fetcher.py)：`_determine_facility_type()` 同步加入；Overpass fallback 查詢亦補上 `node["highway"="elevator"]`，確保索引失效時仍能找到升降機。
+- 已重建正式索引：升降機由 16 個增至 **1,283** 個（其餘類型不變：樓梯 11,426、站出入口 648、斜坡 7）。
+
+### 驗證結果
+
+- 香港站 → 香港大學：設施含 **elevator 14**，`has_elevator_access` 變為 true。
+- 九龍塘站 → 楊建文學術樓：設施含 **elevator 1**，`has_elevator_access` 變為 true。
+- 後端回歸測試 20 項全部通過，廁所／泊車位／站出入口／樓梯數量不受影響。
+- 前端無需修改：升降機本來就會以綠色圓點顯示並計入「有升降機」徽章。
+
+## 二十、2026-10-09 設施切換按鈕介面更新
+
+- 新增「升降機」顯示／隱藏切換，五類設施（廁所、泊車位、樓梯、港鐵站、升降機）均可獨立控制。
+- 按鈕從側欄移至**地圖右側浮動覆疊**（不佔獨立框架、地圖滿版），名稱簡化為關鍵字：廁所、泊車位、樓梯、港鐵站、升降機。
+- 按鈕改為小型膠囊樣式；該類標記被隱藏時按鈕變淡變灰（`is-off`），可直接看出目前顯示狀態。
+- 升降機標記由綠色圓點改為 `images/lift.png` 圖示（36px），並從圓點圖層移除避免重疊；圓點圖層現只保留斜坡（橙色）。
+- 前端 `npm run build` 通過；瀏覽器實測確認按鈕浮於地圖右側、地圖渲染正常。
+- `操作手冊.md` 已同步更新（按鈕用法、圖示對照、索引內容與重建注意事項）。

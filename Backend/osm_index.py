@@ -31,6 +31,17 @@ def _create_schema(connection):
         CREATE VIRTUAL TABLE facility_spatial_index USING rtree(
             id, min_longitude, max_longitude, min_latitude, max_latitude
         );
+        CREATE TABLE structure_ways (
+            id INTEGER PRIMARY KEY,
+            osm_id INTEGER NOT NULL UNIQUE,
+            structure_type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            coords_json TEXT NOT NULL,
+            tags_json TEXT NOT NULL
+        );
+        CREATE VIRTUAL TABLE structure_way_spatial_index USING rtree(
+            id, min_longitude, max_longitude, min_latitude, max_latitude
+        );
         CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE INDEX facilities_type_index ON facilities(facility_type);
         """
@@ -38,12 +49,29 @@ def _create_schema(connection):
 
 
 def _facility_type(tags):
-    if tags.get("elevator") == "yes":
+    railway = str(tags.get("railway", "")).lower()
+    public_transport = str(tags.get("public_transport", "")).lower()
+
+    if public_transport == "station_exit":
+        return "station_exit"
+    if railway in {"subway_entrance", "station_entrance"}:
+        return "station_exit"
+    if tags.get("elevator") == "yes" or tags.get("highway") == "elevator":
         return "elevator"
     if tags.get("highway") == "steps":
         return "steps"
     if tags.get("ramp") == "yes":
         return "ramp"
+    return None
+
+
+def _structure_type(tags):
+    bridge = str(tags.get("bridge", "")).lower()
+    tunnel = str(tags.get("tunnel", "")).lower()
+    if bridge and bridge != "no":
+        return "bridge"
+    if tunnel and tunnel != "no":
+        return "tunnel"
     return None
 
 
@@ -53,6 +81,7 @@ class _FacilityHandler(osmium.SimpleHandler):
         self.connection = connection
         self.batch_size = batch_size
         self.pending = []
+        self.pending_structures = []
         self.type_counts = Counter()
 
     def _add(self, osm_type, osm_id, facility_type, tags, latitude, longitude):
@@ -80,6 +109,23 @@ class _FacilityHandler(osmium.SimpleHandler):
         self._add("node", node.id, facility_type, node.tags, node.location.lat, node.location.lon)
 
     def way(self, way):
+        structure_type = _structure_type(way.tags)
+        if structure_type is not None:
+            coordinates = [
+                (node.location.lat, node.location.lon)
+                for node in way.nodes
+                if node.location.valid()
+            ]
+            if len(coordinates) >= 2:
+                tag_values = {tag.k: tag.v for tag in way.tags}
+                name = tag_values.get("name") or tag_values.get("name:zh") or structure_type
+                self.pending_structures.append((
+                    way.id,
+                    structure_type,
+                    name,
+                    json.dumps(coordinates),
+                    json.dumps(tag_values, ensure_ascii=False),
+                ))
         if way.tags.get("highway") != "steps":
             return
         coordinates = [
@@ -108,6 +154,22 @@ class _FacilityHandler(osmium.SimpleHandler):
                 (cursor.lastrowid, feature[5], feature[5], feature[4], feature[4]),
             )
         self.pending.clear()
+        for osm_id, structure_type, name, coords_json, tags_json in self.pending_structures:
+            coordinates = json.loads(coords_json)
+            latitudes = [point[0] for point in coordinates]
+            longitudes = [point[1] for point in coordinates]
+            cursor = self.connection.execute(
+                """
+                INSERT INTO structure_ways (osm_id, structure_type, name, coords_json, tags_json)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (osm_id, structure_type, name, coords_json, tags_json),
+            )
+            self.connection.execute(
+                "INSERT INTO structure_way_spatial_index VALUES (?, ?, ?, ?, ?)",
+                (cursor.lastrowid, min(longitudes), max(longitudes), min(latitudes), max(latitudes)),
+            )
+        self.pending_structures.clear()
         self.connection.commit()
 
 
@@ -196,6 +258,38 @@ def query_osm_index(bbox, index_path=DEFAULT_INDEX_PATH):
             element.update({"lat": latitude, "lon": longitude})
         elements.append(element)
     return elements
+
+
+def query_structure_ways(bbox, index_path=DEFAULT_INDEX_PATH):
+    south, west, north, east = bbox
+    index_path = Path(index_path).resolve()
+    if not index_path.is_file():
+        return []
+    try:
+        with sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True) as connection:
+            rows = connection.execute(
+                """
+                SELECT w.structure_type, w.name, w.coords_json, w.tags_json
+                FROM structure_way_spatial_index AS spatial
+                JOIN structure_ways AS w ON w.id = spatial.id
+                WHERE spatial.min_longitude <= ? AND spatial.max_longitude >= ?
+                  AND spatial.min_latitude <= ? AND spatial.max_latitude >= ?
+                """,
+                (east, west, north, south),
+            ).fetchall()
+    except sqlite3.Error:
+        # 舊版索引沒有 structure_ways 資料表，優雅降級
+        return []
+
+    return [
+        {
+            "structure_type": structure_type,
+            "name": name,
+            "coords": json.loads(coords_json),
+            "tags": json.loads(tags_json),
+        }
+        for structure_type, name, coords_json, tags_json in rows
+    ]
 
 
 # 更新記錄：2026-10-09 新增 PBF 串流匯入、SQLite RTree 索引及 bbox 設施查詢。
