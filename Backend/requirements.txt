@@ -8,3 +8,5 @@ shapely==2.1.2
 pyproj==3.7.1
 geographiclib==2.0
 gunicorn==21.2.0
+osmium==4.3.1
+# 更新記錄：2026-10-09 加入 PyOsmium，以解析本地 OSM PBF 建立 SQLite RTree 索引。

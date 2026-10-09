@@ -1,10 +1,13 @@
+import json
+import sqlite3
 from unittest.mock import Mock
 
 import pytest
 import requests
 import facilities_fetcher
 import app as app_module
-from app import app, choose_preferred_route, classify_route_obstacles, normalize_route_geometry, _filter_facilities_near_route
+from osm_index import _create_schema, query_osm_index
+from app import app, choose_preferred_route, classify_route_obstacles, normalize_route_geometry, _filter_facilities_for_map, _filter_facilities_near_route
 
 @pytest.fixture
 def client():
@@ -98,6 +101,29 @@ def test_barrier_free_items_normalize_toilet_and_parking_and_exclude_osm_copies(
     assert facilities[0]["url"] == "https://barrierfreemap.hk/location/1"
 
 
+def test_normalize_keeps_mtr_station_exit_from_osm():
+    overpass_data = {
+        "elements": [
+            {
+                "type": "node",
+                "lat": 22.32,
+                "lon": 114.17,
+                "tags": {
+                    "railway": "subway_entrance",
+                    "public_transport": "station_exit",
+                    "name": "港鐵站出口 A",
+                    "ref": "A",
+                },
+            }
+        ]
+    }
+
+    facilities = facilities_fetcher.normalize({"items": []}, overpass_data)
+
+    assert any(facility["type"] == "station_exit" and facility["source"] == "osm" for facility in facilities)
+    assert any(facility["name"] == "港鐵站出口 A" for facility in facilities)
+
+
 def test_normalize_logs_excluded_unclassified_facilities(caplog):
     overpass_data = {
         "elements": [
@@ -112,6 +138,55 @@ def test_normalize_logs_excluded_unclassified_facilities(caplog):
     assert facilities == []
     assert "excluded_unclassified=1" in caplog.text
     assert "excluded_generic_obstacles=1" in caplog.text
+
+
+def test_local_osm_index_bbox_query_returns_nodes_and_way_centers(tmp_path):
+    index_path = tmp_path / "osm.sqlite3"
+    with sqlite3.connect(index_path) as connection:
+        _create_schema(connection)
+        features = [
+            ("node", 1, "elevator", "Lift A", 22.32, 114.17, {"elevator": "yes", "name": "Lift A"}),
+            ("way", 2, "steps", "Stairs", 22.321, 114.171, {"highway": "steps"}),
+            ("node", 3, "ramp", "Far ramp", 23.0, 114.17, {"ramp": "yes"}),
+        ]
+        for osm_type, osm_id, facility_type, name, lat, lon, tags in features:
+            cursor = connection.execute(
+                """
+                INSERT INTO facilities (
+                    osm_type, osm_id, facility_type, name, latitude, longitude, tags_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (osm_type, osm_id, facility_type, name, lat, lon, json.dumps(tags)),
+            )
+            connection.execute(
+                "INSERT INTO facility_spatial_index VALUES (?, ?, ?, ?, ?)",
+                (cursor.lastrowid, lon, lon, lat, lat),
+            )
+
+    elements = query_osm_index([22.30, 114.15, 22.33, 114.18], index_path)
+    facilities = facilities_fetcher.normalize({"items": []}, {"elements": elements})
+
+    assert [(item["type"], item["source"]) for item in facilities] == [
+        ("elevator", "osm"),
+        ("steps", "osm"),
+    ]
+    way_element = next(item for item in elements if item["type"] == "way")
+    assert way_element["center"] == {"lat": 22.321, "lon": 114.171}
+
+
+def test_fetch_overpass_prefers_current_local_index(monkeypatch):
+    local_elements = [{"type": "node", "id": 1, "lat": 22.32, "lon": 114.17, "tags": {"elevator": "yes"}}]
+    monkeypatch.setattr(facilities_fetcher, "is_index_current", lambda *args: True)
+    monkeypatch.setattr(facilities_fetcher, "query_osm_index", lambda bbox, path: local_elements)
+    monkeypatch.setattr(
+        facilities_fetcher.requests,
+        "post",
+        Mock(side_effect=AssertionError("Overpass should not be called when local index is current")),
+    )
+
+    result = facilities_fetcher.fetch_overpass([22.3, 114.1, 22.4, 114.2])
+
+    assert result == {"elements": local_elements}
 
 
 def test_fetch_barrier_free_uses_items_endpoint_and_filters_bbox(monkeypatch):
@@ -146,6 +221,19 @@ def test_facilities_are_limited_to_route_corridor():
     nearby = _filter_facilities_near_route(facilities, route)
 
     assert [facility["name"] for facility in nearby] == ["Near", "Middle", "Far"]
+
+
+def test_map_keeps_all_barrierfree_and_limits_osm_to_100m_from_route():
+    route = [[114.17, 22.32], [114.18, 22.32]]
+    facilities = [
+        {"name": "BarrierFree toilet", "source": "barrierfree", "type": "toilet", "longitude": 114.175, "latitude": 22.35},
+        {"name": "Near elevator", "source": "osm", "type": "elevator", "longitude": 114.175, "latitude": 22.3201},
+        {"name": "Distant steps", "source": "osm", "type": "steps", "longitude": 114.175, "latitude": 22.322},
+    ]
+
+    visible = _filter_facilities_for_map(facilities, route)
+
+    assert [facility["name"] for facility in visible] == ["BarrierFree toilet", "Near elevator"]
 
 
 def test_route_slopes(client):
@@ -187,8 +275,10 @@ def test_route_keeps_ors_route_when_facility_api_fails(client, monkeypatch):
     }]
 
     monkeypatch.setattr("app.query_ors_routes", lambda start, end: {"routes": fake_routes})
-    monkeypatch.setattr("app.fetch_barrier_free", lambda bbox: (_ for _ in ()).throw(RuntimeError("barrier API failed")))
-    monkeypatch.setattr("app.fetch_overpass", lambda bbox: (_ for _ in ()).throw(RuntimeError("overpass API failed")))
+    barrier_fetch = Mock(side_effect=RuntimeError("barrier API failed"))
+    osm_fetch = Mock(side_effect=RuntimeError("OSM lookup failed"))
+    monkeypatch.setattr(app_module, "fetch_barrier_free", barrier_fetch)
+    monkeypatch.setattr(app_module, "fetch_overpass", osm_fetch)
 
     response = client.post("/route", json={
         "start": [114.17, 22.32],
@@ -199,6 +289,8 @@ def test_route_keeps_ors_route_when_facility_api_fails(client, monkeypatch):
     data = response.get_json()
     assert data["route_source"] == "openrouteservice"
     assert data["warning"] is None
+    barrier_fetch.assert_called_once()
+    osm_fetch.assert_called_once()
 
 
 def test_route_uses_mapbox_walking_when_ors_cannot_route(client, monkeypatch):
@@ -265,3 +357,6 @@ def test_fetch_barrier_free_handles_unauthorized_response(monkeypatch, caplog):
 
 
 # 更新記錄：2026-10-09 加入泛用 facility/obstacle 過濾及 debug 記錄回歸測試。
+# 更新記錄：2026-10-09 加入本地 PBF SQLite 索引 bbox 查詢及優先使用索引的回歸測試。
+# 更新記錄：2026-10-09 驗證地圖保留 BarrierFreeMap 資料並只顯示 100 公尺路線範圍內 OSM 資料。
+# 更新記錄：2026-10-09 驗證 ORS 路線共用一次設施查詢，避免重複 API/索引讀取。

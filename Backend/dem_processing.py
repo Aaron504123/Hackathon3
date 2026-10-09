@@ -1,7 +1,7 @@
 import math, rasterio
 import numpy as np
 from pathlib import Path
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point
 from pyproj import Transformer
 from geographiclib.geodesic import Geodesic
 from config import DEM_PATH, SAMPLE_DISTANCE_M, SLOPE_SMOOTHING_WINDOW_M
@@ -13,6 +13,7 @@ _dem_ds = rasterio.open(DEM_PATH)
 _dem_crs = _dem_ds.crs
 _to_dem = Transformer.from_crs("EPSG:4326", _dem_crs, always_xy=True)
 _to_wgs = Transformer.from_crs(_dem_crs, "EPSG:4326", always_xy=True)
+_to_metric = Transformer.from_crs("EPSG:4326", "EPSG:2326", always_xy=True)
 
 def sample_elevations(coords, sample_distance_m=SAMPLE_DISTANCE_M):
     line = LineString(coords)
@@ -91,6 +92,74 @@ def smooth_elevations(samples, window_m=SLOPE_SMOOTHING_WINDOW_M):
         smoothed.append((lon, lat, fitted_elevation))
 
     return smoothed
+
+def correct_structural_elevations(samples, structures, threshold_m=12.0):
+    """修正天橋／隧道段的高程假坡度。
+
+    DEM 是裸地地形模型，沒有橋面或隧道結構；路線經過天橋時，取樣到的是
+    橋下地面（或路塹）高程，會在橋段產生虛假陡坡。此函數把落在結構線上
+    的連續取樣點高程，改為以結構兩端地面高程線性內插，近似水平的橋面。
+
+    回傳 (修正後 samples, 被修正的索引集合)。
+    """
+    if not structures:
+        return samples, set()
+
+    lines = []
+    for structure in structures:
+        coords = structure.get("coords") or []
+        if len(coords) < 2:
+            continue
+        metric_coords = [_to_metric.transform(lon, lat) for lat, lon in coords]
+        lines.append(LineString(metric_coords))
+    if not lines:
+        return samples, set()
+
+    on_structure = []
+    for lon, lat, _ in samples:
+        x, y = _to_metric.transform(lon, lat)
+        point = Point(x, y)
+        on_structure.append(any(line.distance(point) <= threshold_m for line in lines))
+
+    corrected = list(samples)
+    corrected_indices = set()
+    n = len(samples)
+    index = 0
+    while index < n:
+        if not on_structure[index]:
+            index += 1
+            continue
+        run_end = index
+        while run_end + 1 < n and on_structure[run_end + 1]:
+            run_end += 1
+
+        left_elev = next(
+            (samples[j][2] for j in range(index - 1, -1, -1) if samples[j][2] is not None),
+            None,
+        )
+        right_elev = next(
+            (samples[j][2] for j in range(run_end + 1, n) if samples[j][2] is not None),
+            None,
+        )
+
+        for j in range(index, run_end + 1):
+            lon, lat, _ = samples[j]
+            if left_elev is None and right_elev is None:
+                continue
+            if left_elev is None:
+                new_elev = right_elev
+            elif right_elev is None:
+                new_elev = left_elev
+            else:
+                ratio = (j - index + 1) / (run_end - index + 2)
+                new_elev = left_elev + (right_elev - left_elev) * ratio
+            corrected[j] = (lon, lat, new_elev)
+            corrected_indices.add(j)
+
+        index = run_end + 1
+
+    return corrected, corrected_indices
+
 
 def compute_slopes(samples):
     geod = Geodesic.WGS84

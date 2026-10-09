@@ -4,6 +4,8 @@ import * as OpenCC from 'opencc-js'
 import accessibleToiletIcon from '../../images/Accessible_Toilet.png'
 import accessibleParkingIcon from '../../images/Accessible_Parking.png'
 import stairsMarkerIcon from '../../images/stair.png'
+import stationEntranceIcon from '../../images/entrance.png'
+import liftMarkerIcon from '../../images/lift.png'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import './App.css'
 
@@ -14,10 +16,14 @@ const HONG_KONG_BOUNDS = {
   maxLat: 22.6,
 }
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || '/api'
-const FACILITY_ICON_VERSION = '20261009-2'
+const FACILITY_ICON_VERSION = '20261009-4'
 const DISPLAYED_FACILITY_TYPES = new Set([
-  'toilet', 'parking', 'step', 'steps', 'stair', 'stairs', 'elevator', 'lift', 'ramp',
+  'toilet', 'parking', 'step', 'steps', 'stair', 'stairs', 'elevator', 'lift', 'ramp', 'station_exit', 'station_entrance', 'subway_entrance', 'entrance',
 ])
+
+const STEPS_FACILITY_TYPES = new Set(['step', 'steps', 'stair', 'stairs'])
+const STATION_EXIT_FACILITY_TYPES = new Set(['station_exit', 'station_entrance', 'subway_entrance', 'entrance'])
+const ELEVATOR_FACILITY_TYPES = new Set(['elevator', 'lift'])
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN || ''
 
@@ -183,6 +189,7 @@ function getFacilityColor(type = '') {
   if (text.includes('step') || text.includes('stair')) return '#ef4444'
   if (text.includes('elevator') || text.includes('lift')) return '#16a34a'
   if (text.includes('ramp')) return '#f59e0b'
+  if (text.includes('station') || text.includes('entrance') || text.includes('exit')) return '#0ea5e9'
   if (text.includes('toilet')) return '#2563eb'
   if (text.includes('parking')) return '#0f766e'
   if (text.includes('obstacle')) return '#7c3aed'
@@ -194,6 +201,7 @@ function getFacilityLabel(type = '') {
   if (text.includes('step') || text.includes('stair')) return '樓梯'
   if (text.includes('elevator') || text.includes('lift')) return '升降機'
   if (text.includes('ramp')) return '斜坡'
+  if (text.includes('station') || text.includes('entrance') || text.includes('exit')) return '港鐵站出入口'
   if (text.includes('toilet')) return '無障礙廁所'
   if (text.includes('parking')) return '無障礙泊車位'
   if (text.includes('obstacle')) return '障礙'
@@ -212,6 +220,9 @@ function App() {
   const [status, setStatus] = useState('')
   const [showToiletMarkers, setShowToiletMarkers] = useState(true)
   const [showParkingMarkers, setShowParkingMarkers] = useState(true)
+  const [showStepsMarkers, setShowStepsMarkers] = useState(true)
+  const [showStationExitMarkers, setShowStationExitMarkers] = useState(true)
+  const [showElevatorMarkers, setShowElevatorMarkers] = useState(true)
   const mapError = mapboxgl.accessToken
     ? ''
     : '地圖尚未載入：請將 Frontend/.env.example 複製為 .env，並設定 VITE_MAPBOX_TOKEN。'
@@ -269,7 +280,10 @@ function App() {
       const typeText = String(facility.type || '').toLowerCase()
       return !(
         (typeText === 'toilet' && !showToiletMarkers) ||
-        (typeText === 'parking' && !showParkingMarkers)
+        (typeText === 'parking' && !showParkingMarkers) ||
+        (STEPS_FACILITY_TYPES.has(typeText) && !showStepsMarkers) ||
+        (STATION_EXIT_FACILITY_TYPES.has(typeText) && !showStationExitMarkers) ||
+        (ELEVATOR_FACILITY_TYPES.has(typeText) && !showElevatorMarkers)
       )
     })
 
@@ -326,7 +340,7 @@ function App() {
     markersRef.current = [startMarker, endMarker]
 
     const obstacleFeatures = visibleFacilities
-      .filter((facility) => /step|stair|elevator|lift|ramp|obstacle/i.test(facility.type || ''))
+      .filter((facility) => /ramp|obstacle/i.test(facility.type || ''))
       .map((facility) => ({
         type: 'Feature',
         properties: {
@@ -374,6 +388,8 @@ function App() {
       const isToilet = typeText.includes('toilet')
       const isParking = typeText.includes('parking')
       const isStairs = typeText.includes('step') || typeText.includes('stair')
+      const isStationExit = typeText.includes('station') || typeText.includes('entrance') || typeText.includes('exit')
+      const isElevator = typeText.includes('elevator') || typeText.includes('lift')
       const obstacleLabel = getFacilityLabel(facility.type)
       const obstacleColor = getFacilityColor(facility.type)
       let markerOptions = { color: obstacleColor }
@@ -395,6 +411,18 @@ function App() {
         icon.src = stairsMarkerIcon
         icon.alt = facility.name || '樓梯'
         icon.className = 'stairs-marker-icon'
+        markerOptions = { element: icon, anchor: 'bottom' }
+      } else if (isStationExit) {
+        const icon = document.createElement('img')
+        icon.src = `${stationEntranceIcon}?v=${FACILITY_ICON_VERSION}`
+        icon.alt = facility.name || '港鐵站出入口'
+        icon.className = 'station-exit-marker-icon'
+        markerOptions = { element: icon, anchor: 'bottom' }
+      } else if (isElevator) {
+        const icon = document.createElement('img')
+        icon.src = `${liftMarkerIcon}?v=${FACILITY_ICON_VERSION}`
+        icon.alt = facility.name || '升降機'
+        icon.className = 'lift-marker-icon'
         markerOptions = { element: icon, anchor: 'bottom' }
       }
 
@@ -439,7 +467,7 @@ function App() {
 
       markersRef.current.push(marker)
     })
-  }, [routeData, showToiletMarkers, showParkingMarkers])
+  }, [routeData, showToiletMarkers, showParkingMarkers, showStepsMarkers, showStationExitMarkers, showElevatorMarkers])
 
   const handleRouteRequest = async () => {
     setLoading(true)
@@ -542,20 +570,6 @@ function App() {
             </span>
           </div>
           {routeData?.warning ? <div className="alert info route-warning">{routeData.warning}</div> : null}
-          <button
-            type="button"
-            className="facility-toggle-button"
-            onClick={() => setShowToiletMarkers((current) => !current)}
-          >
-            {showToiletMarkers ? '隱藏無障礙廁所' : '顯示無障礙廁所'}
-          </button>
-          <button
-            type="button"
-            className="facility-toggle-button"
-            onClick={() => setShowParkingMarkers((current) => !current)}
-          >
-            {showParkingMarkers ? '隱藏無障礙泊車位' : '顯示無障礙泊車位'}
-          </button>
         </div>
 
         <div className="legend">
@@ -573,6 +587,43 @@ function App() {
 
       <main className="map-area">
         <div ref={mapContainerRef} className="map-container" />
+        <div className="map-toggle-bar">
+          <button
+            type="button"
+            className={`facility-toggle-button${showToiletMarkers ? '' : ' is-off'}`}
+            onClick={() => setShowToiletMarkers((current) => !current)}
+          >
+            廁所
+          </button>
+          <button
+            type="button"
+            className={`facility-toggle-button${showParkingMarkers ? '' : ' is-off'}`}
+            onClick={() => setShowParkingMarkers((current) => !current)}
+          >
+            泊車位
+          </button>
+          <button
+            type="button"
+            className={`facility-toggle-button${showStepsMarkers ? '' : ' is-off'}`}
+            onClick={() => setShowStepsMarkers((current) => !current)}
+          >
+            樓梯
+          </button>
+          <button
+            type="button"
+            className={`facility-toggle-button${showStationExitMarkers ? '' : ' is-off'}`}
+            onClick={() => setShowStationExitMarkers((current) => !current)}
+          >
+            港鐵站
+          </button>
+          <button
+            type="button"
+            className={`facility-toggle-button${showElevatorMarkers ? '' : ' is-off'}`}
+            onClick={() => setShowElevatorMarkers((current) => !current)}
+          >
+            升降機
+          </button>
+        </div>
       </main>
     </div>
   )
@@ -582,6 +633,7 @@ export default App
 
 /*
 更新記錄：
+- 2026-10-09：新增「樓梯」與「港鐵站出入口」兩個獨立顯示／隱藏按鈕，與原有廁所、泊車位開關並列；樓梯開關涵蓋 step/steps/stair/stairs 類型，出入口開關涵蓋 station_exit/station_entrance/subway_entrance/entrance 類型，不影響其他設施標記。
 - 2026-10-09：修正地點搜尋失敗問題，Photon 在本環境回傳 403 時自動切換至 Nominatim，仍保留香港範圍驗證，讓「香港站 → 香港大學」等路線測試可正常進行。
 - 說明：原先前端完全依賴 Photon；當該服務被拒絕時，地點搜尋會卡在「計算中」而無法取得座標。此修正以 Nominatim 作為備援來源，並保留原本的香港邊界檢查，避免輸出非香港位置。
 - 2026-10-09：新增無障礙廁所顯示／隱藏開關，並修正原因解釋。路徑附近只有 1 個無障礙廁所，主因是後端僅保留距離路線 40 公尺內且位於路線 bbox 範圍內的設施；此條件會大幅縮小可見廁所數量，且路線本身也可能沒有太多鄰近設施。
