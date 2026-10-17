@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import mapboxgl from 'mapbox-gl'
 import * as OpenCC from 'opencc-js'
 import accessibleToiletIcon from '../../images/Accessible_Toilet.png'
@@ -24,6 +24,10 @@ const DISPLAYED_FACILITY_TYPES = new Set([
 const STEPS_FACILITY_TYPES = new Set(['step', 'steps', 'stair', 'stairs'])
 const STATION_EXIT_FACILITY_TYPES = new Set(['station_exit', 'station_entrance', 'subway_entrance', 'entrance'])
 const ELEVATOR_FACILITY_TYPES = new Set(['elevator', 'lift'])
+
+const NAV_SPEED_MPS = 5
+const NAV_TELEPORT_THRESHOLD_M = 30
+const TURN_MIN_ANGLE_DEG = 35
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN || ''
 
@@ -208,6 +212,87 @@ function getFacilityLabel(type = '') {
   return '設施'
 }
 
+function toLocalMeters(lng, lat, refLat) {
+  return [lng * 111320 * Math.cos((refLat * Math.PI) / 180), lat * 110540]
+}
+
+function bearingDeg(from, to) {
+  const lat1 = (from[1] * Math.PI) / 180
+  const lat2 = (to[1] * Math.PI) / 180
+  const dLng = ((to[0] - from[0]) * Math.PI) / 180
+  const y = Math.sin(dLng) * Math.cos(lat2)
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng)
+  return (((Math.atan2(y, x) * 180) / Math.PI) + 360) % 360
+}
+
+function buildRouteMetrics(coordinates) {
+  if (!Array.isArray(coordinates) || coordinates.length < 2) return null
+  const cumulative = [0]
+  for (let i = 1; i < coordinates.length; i++) {
+    const [x1, y1] = toLocalMeters(coordinates[i - 1][0], coordinates[i - 1][1], coordinates[i - 1][1])
+    const [x2, y2] = toLocalMeters(coordinates[i][0], coordinates[i][1], coordinates[i - 1][1])
+    cumulative.push(cumulative[i - 1] + Math.hypot(x2 - x1, y2 - y1))
+  }
+  const total = cumulative[cumulative.length - 1]
+
+  const turns = []
+  for (let i = 1; i < coordinates.length - 1; i++) {
+    const b1 = bearingDeg(coordinates[i - 1], coordinates[i])
+    const b2 = bearingDeg(coordinates[i], coordinates[i + 1])
+    const diff = ((((b2 - b1) % 360) + 540) % 360) - 180
+    if (Math.abs(diff) >= TURN_MIN_ANGLE_DEG) {
+      const direction = diff > 0 ? '右轉' : '左轉'
+      const lastTurn = turns[turns.length - 1]
+      if (lastTurn && cumulative[i] - lastTurn.distance < 10) {
+        if (Math.abs(diff) > Math.abs(lastTurn.diff)) {
+          lastTurn.direction = direction
+          lastTurn.diff = diff
+        }
+      } else {
+        turns.push({ distance: cumulative[i], direction, diff })
+      }
+    }
+  }
+  return { cumulative, total, turns }
+}
+
+function pointAtDistance(coordinates, cumulative, distance) {
+  if (distance <= 0) return coordinates[0]
+  const lastIndex = cumulative.length - 1
+  if (distance >= cumulative[lastIndex]) return coordinates[lastIndex]
+  let i = 1
+  while (cumulative[i] < distance) i++
+  const segmentStart = cumulative[i - 1]
+  const segmentLength = cumulative[i] - segmentStart
+  const ratio = segmentLength === 0 ? 0 : (distance - segmentStart) / segmentLength
+  const [lng1, lat1] = coordinates[i - 1]
+  const [lng2, lat2] = coordinates[i]
+  return [lng1 + (lng2 - lng1) * ratio, lat1 + (lat2 - lat1) * ratio]
+}
+
+function nearestProgressOnRoute(coordinates, cumulative, lngLat) {
+  const [px, py] = toLocalMeters(lngLat[0], lngLat[1], lngLat[1])
+  let best = { progress: 0, distanceMeters: Infinity }
+  for (let i = 0; i < coordinates.length - 1; i++) {
+    const [x1, y1] = toLocalMeters(coordinates[i][0], coordinates[i][1], lngLat[1])
+    const [x2, y2] = toLocalMeters(coordinates[i + 1][0], coordinates[i + 1][1], lngLat[1])
+    const dx = x2 - x1
+    const dy = y2 - y1
+    const lengthSq = dx * dx + dy * dy
+    const t = lengthSq === 0 ? 0 : Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / lengthSq))
+    const dist = Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
+    if (dist < best.distanceMeters) {
+      best = { progress: cumulative[i] + Math.sqrt(lengthSq) * t, distanceMeters: dist }
+    }
+  }
+  return best
+}
+
+function formatDistance(meters) {
+  if (meters >= 1000) return `${(meters / 1000).toFixed(2)} 公里`
+  return `${Math.round(meters)} 米`
+}
+
 function App() {
   const mapContainerRef = useRef(null)
   const mapRef = useRef(null)
@@ -223,6 +308,14 @@ function App() {
   const [showStepsMarkers, setShowStepsMarkers] = useState(true)
   const [showStationExitMarkers, setShowStationExitMarkers] = useState(true)
   const [showElevatorMarkers, setShowElevatorMarkers] = useState(true)
+  const [navActive, setNavActive] = useState(false)
+  const [navPaused, setNavPaused] = useState(false)
+  const [navInfo, setNavInfo] = useState(null)
+  const navMarkerRef = useRef(null)
+  const navTimerRef = useRef(null)
+  const navProgressRef = useRef(0)
+  const navPausedRef = useRef(false)
+  const navInfoThrottleRef = useRef(0)
   const mapError = mapboxgl.accessToken
     ? ''
     : '地圖尚未載入：請將 Frontend/.env.example 複製為 .env，並設定 VITE_MAPBOX_TOKEN。'
@@ -469,6 +562,126 @@ function App() {
     })
   }, [routeData, showToiletMarkers, showParkingMarkers, showStepsMarkers, showStationExitMarkers, showElevatorMarkers])
 
+  const routeMetrics = useMemo(
+    () => buildRouteMetrics(routeData?.route?.coordinates),
+    [routeData],
+  )
+
+  const updateNavInfo = (progress) => {
+    if (!routeMetrics) return
+    const remaining = Math.max(0, routeMetrics.total - progress)
+    const nextTurn = routeMetrics.turns.find((turn) => turn.distance > progress + 2)
+    const turnText = nextTurn
+      ? `${formatDistance(nextTurn.distance - progress)}後${nextTurn.direction}`
+      : '直行前往終點'
+    let slopeDeg = null
+    const segments = routeData?.segments
+    if (Array.isArray(segments) && segments.length > 0) {
+      let traveled = 0
+      for (let i = 0; i < segments.length; i++) {
+        const length = segments[i].distance_m || 0
+        if (progress < traveled + length) {
+          slopeDeg = segments[i].slope_deg
+          break
+        }
+        traveled += length
+      }
+      if (slopeDeg === null) slopeDeg = segments[segments.length - 1].slope_deg
+    }
+    setNavInfo({ remaining, turnText, slopeDeg })
+  }
+
+  const endNavigation = (message) => {
+    if (navTimerRef.current) {
+      clearInterval(navTimerRef.current)
+      navTimerRef.current = null
+    }
+    if (navMarkerRef.current) {
+      navMarkerRef.current.remove()
+      navMarkerRef.current = null
+    }
+    navPausedRef.current = false
+    setNavActive(false)
+    setNavPaused(false)
+    setNavInfo(null)
+    if (message) setStatus(message)
+  }
+
+  const startNavigation = () => {
+    if (!routeData || !routeMetrics || !mapRef.current) return
+    endNavigation()
+    navProgressRef.current = 0
+    const markerElement = document.createElement('div')
+    markerElement.className = 'nav-marker'
+    const marker = new mapboxgl.Marker({ element: markerElement })
+      .setLngLat(routeData.route.coordinates[0])
+      .addTo(mapRef.current)
+    navMarkerRef.current = marker
+    setNavActive(true)
+    setNavPaused(false)
+    navPausedRef.current = false
+    updateNavInfo(0)
+
+    let lastTick = performance.now()
+    navTimerRef.current = setInterval(() => {
+      if (!navPausedRef.current) {
+        const now = performance.now()
+        const dt = (now - lastTick) / 1000
+        navProgressRef.current = Math.min(navProgressRef.current + NAV_SPEED_MPS * dt, routeMetrics.total)
+        const position = pointAtDistance(routeData.route.coordinates, routeMetrics.cumulative, navProgressRef.current)
+        marker.setLngLat(position)
+        if (now - navInfoThrottleRef.current > 250) {
+          navInfoThrottleRef.current = now
+          updateNavInfo(navProgressRef.current)
+        }
+        if (navProgressRef.current >= routeMetrics.total) {
+          endNavigation('已到達終點，導航結束。')
+        }
+      }
+      lastTick = performance.now()
+    }, 100)
+  }
+
+  const toggleNavPause = () => {
+    setNavPaused((current) => {
+      navPausedRef.current = !current
+      return !current
+    })
+  }
+
+  useEffect(() => {
+    endNavigation()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeData])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !navActive || !routeMetrics || !routeData) return undefined
+    const handleMapClick = (event) => {
+      const nearest = nearestProgressOnRoute(
+        routeData.route.coordinates,
+        routeMetrics.cumulative,
+        [event.lngLat.lng, event.lngLat.lat],
+      )
+      if (nearest.distanceMeters <= NAV_TELEPORT_THRESHOLD_M) {
+        navProgressRef.current = nearest.progress
+        const position = pointAtDistance(routeData.route.coordinates, routeMetrics.cumulative, nearest.progress)
+        navMarkerRef.current?.setLngLat(position)
+        updateNavInfo(nearest.progress)
+      }
+    }
+    map.on('click', handleMapClick)
+    return () => {
+      map.off('click', handleMapClick)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navActive, routeData, routeMetrics])
+
+  useEffect(() => () => {
+    if (navTimerRef.current) clearInterval(navTimerRef.current)
+    if (navMarkerRef.current) navMarkerRef.current.remove()
+  }, [])
+
   const handleRouteRequest = async () => {
     setLoading(true)
     setError('')
@@ -545,6 +758,14 @@ function App() {
 
           <button type="button" onClick={handleRouteRequest} disabled={loading}>
             {loading ? '計算中...' : '計算路線'}
+          </button>
+          <button
+            type="button"
+            className="nav-start-button"
+            onClick={startNavigation}
+            disabled={!routeData || loading}
+          >
+            導航開始
           </button>
         </div>
 
@@ -624,6 +845,23 @@ function App() {
             升降機
           </button>
         </div>
+        {navActive && navInfo ? (
+          <div className="nav-panel">
+            <span>剩餘 <strong>{formatDistance(navInfo.remaining)}</strong></span>
+            <span>{navInfo.turnText}</span>
+            <span>坡度 <strong>{navInfo.slopeDeg != null ? `${Math.abs(navInfo.slopeDeg).toFixed(1)}°` : '--'}</strong></span>
+          </div>
+        ) : null}
+        {navActive ? (
+          <div className="nav-control-buttons">
+            <button type="button" className="nav-circle-button" onClick={toggleNavPause}>
+              {navPaused ? '繼續' : '暫停'}
+            </button>
+            <button type="button" className="nav-circle-button end" onClick={() => endNavigation()}>
+              結束
+            </button>
+          </div>
+        ) : null}
       </main>
     </div>
   )
