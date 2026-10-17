@@ -9,6 +9,13 @@ from geographiclib.geodesic import Geodesic
 from config import MAPBOX_TOKEN, ORS_API_KEY, ORS_API_BASE, ORS_PROFILE, SAMPLE_DISTANCE_M
 from dem_processing import sample_elevations, smooth_elevations, compute_slopes, correct_structural_elevations
 from osm_index import query_structure_ways
+from mtr_facilities import attach_mtr_barrier_free_info
+from pedestrian_index import (
+    analyze_route_wheelchair,
+    fetch_pedestrian_facilities,
+    merge_pedestrian_priority,
+    query_pedestrian_structures,
+)
 from facilities_fetcher import fetch_barrier_free, fetch_overpass, normalize
 
 app = Flask(__name__)
@@ -295,7 +302,8 @@ def route():
             max(route_lats) + 0.001,
             max(route_lons) + 0.001,
         ]
-        structures = query_structure_ways(structure_bbox)
+        # 3DPN 官方行人天橋／隧道資料優先，OSM 結構作補充
+        structures = query_pedestrian_structures(structure_bbox) + query_structure_ways(structure_bbox)
         raw_samples, corrected_indices = correct_structural_elevations(raw_samples, structures)
         if corrected_indices:
             logging.info("Structural elevation correction applied to %d samples", len(corrected_indices))
@@ -318,8 +326,24 @@ def route():
     ]
     if fetched_facilities is None:
         fetched_facilities = fetch_facilities_nearby(bbox)
+    try:
+        # 3DPN 官方行人設施優先；去除 25 米內重複的 OSM 樓梯／升降機／斜道
+        pdpn_facilities = fetch_pedestrian_facilities(bbox)
+        if pdpn_facilities:
+            fetched_facilities = merge_pedestrian_priority(fetched_facilities, pdpn_facilities)
+    except Exception as pdpn_error:
+        logging.warning("3DPN facility merge skipped: %s", pdpn_error)
+    try:
+        wheelchair_analysis = analyze_route_wheelchair(coords, bbox)
+    except Exception as analysis_error:
+        logging.warning("3DPN wheelchair analysis skipped: %s", analysis_error)
+        wheelchair_analysis = None
     nearby_route_facilities = _filter_facilities_near_route(fetched_facilities, coords)
     facilities = _filter_facilities_for_map(fetched_facilities, coords)
+    try:
+        attach_mtr_barrier_free_info(facilities)
+    except Exception as mtr_error:
+        logging.warning("MTR barrier-free enrichment skipped: %s", mtr_error)
 
     route_facility_summary = classify_route_obstacles(facilities)
     max_slope = max([abs(s["slope_deg"]) for s in segments if s["slope_deg"] is not None], default=None)
@@ -351,6 +375,7 @@ def route():
             "has_step_obstacle": route_facility_summary["has_step_obstacle"],
             "has_elevator_access": route_facility_summary["has_elevator_access"],
             "nearby_route_facility_count": len(nearby_route_facilities),
+            "wheelchair_analysis": wheelchair_analysis,
         },
     })
 

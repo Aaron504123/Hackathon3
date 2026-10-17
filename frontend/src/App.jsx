@@ -18,11 +18,12 @@ const HONG_KONG_BOUNDS = {
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || '/api'
 const FACILITY_ICON_VERSION = '20261009-4'
 const DISPLAYED_FACILITY_TYPES = new Set([
-  'toilet', 'parking', 'step', 'steps', 'stair', 'stairs', 'elevator', 'lift', 'ramp', 'station_exit', 'station_entrance', 'subway_entrance', 'entrance',
+  'toilet', 'parking', 'step', 'steps', 'stair', 'stairs', 'elevator', 'lift', 'ramp', 'station', 'station_exit', 'station_entrance', 'subway_entrance', 'entrance',
+  'escalator', 'travelator', 'stairlift', 'crossing',
 ])
 
 const STEPS_FACILITY_TYPES = new Set(['step', 'steps', 'stair', 'stairs'])
-const STATION_EXIT_FACILITY_TYPES = new Set(['station_exit', 'station_entrance', 'subway_entrance', 'entrance'])
+const STATION_EXIT_FACILITY_TYPES = new Set(['station', 'station_exit', 'station_entrance', 'subway_entrance', 'entrance'])
 const ELEVATOR_FACILITY_TYPES = new Set(['elevator', 'lift'])
 
 const NAV_SPEED_MPS = 5
@@ -193,6 +194,9 @@ function getFacilityColor(type = '') {
   if (text.includes('step') || text.includes('stair')) return '#ef4444'
   if (text.includes('elevator') || text.includes('lift')) return '#16a34a'
   if (text.includes('ramp')) return '#f59e0b'
+  if (text.includes('escalator')) return '#a855f7'
+  if (text.includes('travelator')) return '#c084fc'
+  if (text.includes('crossing')) return '#0891b2'
   if (text.includes('station') || text.includes('entrance') || text.includes('exit')) return '#0ea5e9'
   if (text.includes('toilet')) return '#2563eb'
   if (text.includes('parking')) return '#0f766e'
@@ -202,8 +206,13 @@ function getFacilityColor(type = '') {
 
 function getFacilityLabel(type = '') {
   const text = String(type).toLowerCase()
+  if (text === 'station') return '港鐵站'
+  if (text.includes('stairlift')) return '輪椅升降台'
   if (text.includes('step') || text.includes('stair')) return '樓梯'
   if (text.includes('elevator') || text.includes('lift')) return '升降機'
+  if (text.includes('escalator')) return '扶手電梯'
+  if (text.includes('travelator')) return '自動行人道'
+  if (text.includes('crossing')) return '過路處'
   if (text.includes('ramp')) return '斜坡'
   if (text.includes('station') || text.includes('entrance') || text.includes('exit')) return '港鐵站出入口'
   if (text.includes('toilet')) return '無障礙廁所'
@@ -433,7 +442,7 @@ function App() {
     markersRef.current = [startMarker, endMarker]
 
     const obstacleFeatures = visibleFacilities
-      .filter((facility) => /ramp|obstacle/i.test(facility.type || ''))
+      .filter((facility) => /ramp|obstacle|escalator|travelator|stairlift|crossing/i.test(facility.type || ''))
       .map((facility) => ({
         type: 'Feature',
         properties: {
@@ -481,7 +490,8 @@ function App() {
       const isToilet = typeText.includes('toilet')
       const isParking = typeText.includes('parking')
       const isStairs = typeText.includes('step') || typeText.includes('stair')
-      const isStationExit = typeText.includes('station') || typeText.includes('entrance') || typeText.includes('exit')
+      const isStation = typeText === 'station'
+      const isStationExit = !isStation && (typeText.includes('station') || typeText.includes('entrance') || typeText.includes('exit'))
       const isElevator = typeText.includes('elevator') || typeText.includes('lift')
       const obstacleLabel = getFacilityLabel(facility.type)
       const obstacleColor = getFacilityColor(facility.type)
@@ -505,6 +515,12 @@ function App() {
         icon.alt = facility.name || '樓梯'
         icon.className = 'stairs-marker-icon'
         markerOptions = { element: icon, anchor: 'bottom' }
+      } else if (isStation) {
+        const icon = document.createElement('div')
+        icon.className = 'station-marker'
+        icon.textContent = '站'
+        icon.title = facility.name || '港鐵站'
+        markerOptions = { element: icon }
       } else if (isStationExit) {
         const icon = document.createElement('img')
         icon.src = `${stationEntranceIcon}?v=${FACILITY_ICON_VERSION}`
@@ -551,6 +567,21 @@ function App() {
         const source = document.createElement('div')
         source.textContent = `資料來源：${facility.source === 'osm' ? 'OpenStreetMap' : facility.source}`
         popupContent.append(source)
+      }
+
+      if (Array.isArray(facility.mtr_barrier_free) && facility.mtr_barrier_free.length > 0) {
+        const mtrBlock = document.createElement('div')
+        mtrBlock.className = 'mtr-facility-list'
+        const mtrTitle = document.createElement('div')
+        mtrTitle.className = 'mtr-facility-title'
+        mtrTitle.textContent = `港鐵官方無障礙設施（${facility.mtr_station_name}站）`
+        mtrBlock.append(mtrTitle)
+        facility.mtr_barrier_free.slice(0, 15).forEach((item) => {
+          const line = document.createElement('div')
+          line.textContent = item.exit ? `${item.label}（${item.exit}）` : item.label
+          mtrBlock.append(line)
+        })
+        popupContent.append(mtrBlock)
       }
 
       const marker = new mapboxgl.Marker(markerOptions)
@@ -789,6 +820,11 @@ function App() {
             <span className={`obstacle-badge ${routeData?.route_obstacles?.has_elevator_access ? 'elevator' : 'safe'}`}>
               {routeData?.route_obstacles?.has_elevator_access ? '有升降機' : '未確認升降機'}
             </span>
+            {routeData?.summary?.wheelchair_analysis?.barrier_free_ratio != null ? (
+              <span className={`obstacle-badge ${routeData.summary.wheelchair_analysis.barrier_free_ratio >= 0.9 ? 'elevator' : 'step'}`}>
+                {`無障礙路段 ${Math.round(routeData.summary.wheelchair_analysis.barrier_free_ratio * 100)}%（3DPN）`}
+              </span>
+            ) : null}
           </div>
           {routeData?.warning ? <div className="alert info route-warning">{routeData.warning}</div> : null}
         </div>

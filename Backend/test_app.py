@@ -279,6 +279,9 @@ def test_route_keeps_ors_route_when_facility_api_fails(client, monkeypatch):
     osm_fetch = Mock(side_effect=RuntimeError("OSM lookup failed"))
     monkeypatch.setattr(app_module, "fetch_barrier_free", barrier_fetch)
     monkeypatch.setattr(app_module, "fetch_overpass", osm_fetch)
+    # 隔離真實 3DPN 索引，保持此測試只驗證外部 API 失效情境
+    monkeypatch.setattr(app_module, "fetch_pedestrian_facilities", lambda bbox: [])
+    monkeypatch.setattr(app_module, "analyze_route_wheelchair", lambda coords, bbox: None)
 
     response = client.post("/route", json={
         "start": [114.17, 22.32],
@@ -291,6 +294,35 @@ def test_route_keeps_ors_route_when_facility_api_fails(client, monkeypatch):
     assert data["warning"] is None
     barrier_fetch.assert_called_once()
     osm_fetch.assert_called_once()
+
+
+def test_mtr_barrier_free_lookup_by_station_name():
+    from mtr_facilities import match_station
+
+    info = match_station("九龍塘")
+
+    assert info is not None
+    assert info["name_zh"] == "九龍塘"
+    assert any(item["key"].startswith("AJ") for item in info["facilities"])
+    assert all(item["label"] for item in info["facilities"])
+
+
+def test_attach_mtr_barrier_free_links_exit_to_nearest_station():
+    from mtr_facilities import attach_mtr_barrier_free_info
+
+    facilities = [
+        {"type": "station", "name": "九龍塘", "latitude": 22.33680, "longitude": 114.17610},
+        {"type": "station_exit", "name": "A1 出口", "latitude": 22.33670, "longitude": 114.17600},
+        {"type": "station_exit", "name": "遠處出口", "latitude": 22.30000, "longitude": 114.17000},
+        {"type": "toilet", "name": "廁所", "latitude": 22.33675, "longitude": 114.17605},
+    ]
+
+    attach_mtr_barrier_free_info(facilities)
+
+    assert facilities[0]["mtr_station_name"] == "九龍塘"
+    assert facilities[1]["mtr_station_name"] == "九龍塘"
+    assert "mtr_barrier_free" not in facilities[2]
+    assert "mtr_barrier_free" not in facilities[3]
 
 
 def test_route_uses_mapbox_walking_when_ors_cannot_route(client, monkeypatch):
