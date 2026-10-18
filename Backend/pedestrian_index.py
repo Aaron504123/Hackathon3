@@ -15,7 +15,8 @@ import sqlite3
 from pathlib import Path
 
 from pyproj import Transformer
-from shapely import from_wkb, Point, STRtree
+from shapely import from_wkb, LineString, Point, STRtree
+from shapely.ops import transform as shapely_transform
 
 logger = logging.getLogger(__name__)
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -49,6 +50,13 @@ STRUCTURE_FEATURE_TYPES = {2: "bridge", 4: "tunnel"}
 STAIRCASE_TYPES = {12, 21}
 
 _to_metric = Transformer.from_crs("EPSG:4326", "EPSG:2326", always_xy=True)
+_to_wgs = Transformer.from_crs("EPSG:2326", "EPSG:4326", always_xy=True)
+
+PEDESTRIAN_ROUTE_TYPES = {
+    1, 2, 4, 5, 6, 8, 9, 10, 11, 12, 13,
+    15, 16, 17, 18, 19, 20, 21,
+    23, 24, 25, 26, 30, 31, 32, 33,
+}
 
 
 def _row_to_segment(row):
@@ -95,6 +103,86 @@ def query_pedestrian_segments(bbox, index_path=DEFAULT_PEDESTRIAN_INDEX_PATH):
         logger.exception("Pedestrian index query failed")
         return []
     return [_row_to_segment(row) for row in rows]
+
+
+def validate_route_pedestrian_network(coords, max_link_m=5.0, sample_distance_m=5.0,
+                                      index_path=DEFAULT_PEDESTRIAN_INDEX_PATH):
+    """Fail closed unless every route sample matches an allowed 3DPN pedestrian segment."""
+    if len(coords) < 2 or sample_distance_m <= 0 or max_link_m < 0:
+        return {
+            "verified": False,
+            "match_ratio": 0.0,
+            "matched_samples": 0,
+            "total_samples": 0,
+            "max_distance_m": None,
+            "max_link_m": max_link_m,
+        }
+
+    metric_coords = [_to_metric.transform(longitude, latitude) for longitude, latitude in coords]
+    route_line = LineString(metric_coords)
+    if route_line.is_empty or route_line.length == 0:
+        return {
+            "verified": False,
+            "match_ratio": 0.0,
+            "matched_samples": 0,
+            "total_samples": 0,
+            "max_distance_m": None,
+            "max_link_m": max_link_m,
+        }
+
+    min_x, min_y, max_x, max_y = route_line.bounds
+    buffer_m = max_link_m + 5.0
+    bbox_corners = [
+        _to_wgs.transform(min_x - buffer_m, min_y - buffer_m),
+        _to_wgs.transform(min_x - buffer_m, max_y + buffer_m),
+        _to_wgs.transform(max_x + buffer_m, min_y - buffer_m),
+        _to_wgs.transform(max_x + buffer_m, max_y + buffer_m),
+    ]
+    bbox = (
+        min(latitude for _, latitude in bbox_corners),
+        min(longitude for longitude, _ in bbox_corners),
+        max(latitude for _, latitude in bbox_corners),
+        max(longitude for longitude, _ in bbox_corners),
+    )
+    pedestrian_segments = [
+        segment for segment in query_pedestrian_segments(bbox, index_path)
+        if segment["feature_type"] in PEDESTRIAN_ROUTE_TYPES
+    ]
+    total_samples = max(2, math.ceil(route_line.length / sample_distance_m) + 1)
+    sample_points = [
+        route_line.interpolate(route_line.length * index / (total_samples - 1))
+        for index in range(total_samples)
+    ]
+    if not pedestrian_segments:
+        return {
+            "verified": False,
+            "match_ratio": 0.0,
+            "matched_samples": 0,
+            "total_samples": total_samples,
+            "max_distance_m": None,
+            "max_link_m": max_link_m,
+        }
+
+    metric_geometries = [
+        shapely_transform(_to_metric.transform, segment["geometry"])
+        for segment in pedestrian_segments
+    ]
+    tree = STRtree(metric_geometries)
+    distances = []
+    for point in sample_points:
+        nearest_index = int(tree.nearest(point))
+        distances.append(metric_geometries[nearest_index].distance(point))
+
+    matched_samples = sum(distance <= max_link_m for distance in distances)
+    max_distance = max(distances)
+    return {
+        "verified": matched_samples == total_samples,
+        "match_ratio": round(matched_samples / total_samples, 3),
+        "matched_samples": matched_samples,
+        "total_samples": total_samples,
+        "max_distance_m": round(max_distance, 2),
+        "max_link_m": max_link_m,
+    }
 
 
 def _geometry_coord_lines(geometry):

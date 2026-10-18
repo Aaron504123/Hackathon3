@@ -265,6 +265,21 @@
 .orange { background: #f97316; }
 .red { background: #ef4444; }
 
+.structure-line {
+  display: inline-block;
+  width: 22px;
+  height: 0;
+  flex: 0 0 22px;
+}
+
+.structure-line.bridge {
+  border-top: 4px solid #d97706;
+}
+
+.structure-line.tunnel {
+  border-top: 4px dashed #0f766e;
+}
+
 .toilet-marker-icon {
   display: block;
   width: 40px;
@@ -297,6 +312,14 @@
   display: block;
   width: 36px;
   height: auto;
+  filter: drop-shadow(0 2px 3px rgb(15 23 42 / 35%));
+}
+
+.escalator-marker-icon,
+.ramp-marker-icon {
+  display: block;
+  width: 40px;
+  height: 40px;
   filter: drop-shadow(0 2px 3px rgb(15 23 42 / 35%));
 }
 

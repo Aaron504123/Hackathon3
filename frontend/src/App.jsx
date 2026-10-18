@@ -6,6 +6,8 @@ import accessibleParkingIcon from '../../images/Accessible_Parking.png'
 import stairsMarkerIcon from '../../images/stair.png'
 import stationEntranceIcon from '../../images/entrance.png'
 import liftMarkerIcon from '../../images/lift.png'
+import escalatorMarkerIcon from './assets/escalator.svg'
+import rampMarkerIcon from './assets/ramp.svg'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import './App.css'
 
@@ -19,12 +21,14 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || '/api'
 const FACILITY_ICON_VERSION = '20261009-4'
 const DISPLAYED_FACILITY_TYPES = new Set([
   'toilet', 'parking', 'step', 'steps', 'stair', 'stairs', 'elevator', 'lift', 'ramp', 'station', 'station_exit', 'station_entrance', 'subway_entrance', 'entrance',
-  'escalator', 'travelator', 'stairlift', 'crossing',
+  'escalator', 'travelator', 'stairlift',
 ])
 
 const STEPS_FACILITY_TYPES = new Set(['step', 'steps', 'stair', 'stairs'])
 const STATION_EXIT_FACILITY_TYPES = new Set(['station', 'station_exit', 'station_entrance', 'subway_entrance', 'entrance'])
 const ELEVATOR_FACILITY_TYPES = new Set(['elevator', 'lift'])
+const ESCALATOR_FACILITY_TYPES = new Set(['escalator'])
+const RAMP_FACILITY_TYPES = new Set(['ramp'])
 
 const NAV_SPEED_MPS = 5
 const NAV_TELEPORT_THRESHOLD_M = 30
@@ -317,6 +321,8 @@ function App() {
   const [showStepsMarkers, setShowStepsMarkers] = useState(true)
   const [showStationExitMarkers, setShowStationExitMarkers] = useState(true)
   const [showElevatorMarkers, setShowElevatorMarkers] = useState(true)
+  const [showEscalatorMarkers, setShowEscalatorMarkers] = useState(true)
+  const [showRampMarkers, setShowRampMarkers] = useState(true)
   const [navActive, setNavActive] = useState(false)
   const [navPaused, setNavPaused] = useState(false)
   const [navInfo, setNavInfo] = useState(null)
@@ -358,9 +364,13 @@ function App() {
     const map = mapRef.current
     const sourceId = 'accessible-route'
     const layerId = 'accessible-route-layer'
+    const structureSourceId = 'pedestrian-structures'
+    const structureLayerId = 'pedestrian-structures-layer'
 
     if (map.getLayer(layerId)) map.removeLayer(layerId)
     if (map.getSource(sourceId)) map.removeSource(sourceId)
+    if (map.getLayer(structureLayerId)) map.removeLayer(structureLayerId)
+    if (map.getSource(structureSourceId)) map.removeSource(structureSourceId)
 
     markersRef.current.forEach((marker) => marker.remove())
     markersRef.current = []
@@ -385,7 +395,9 @@ function App() {
         (typeText === 'parking' && !showParkingMarkers) ||
         (STEPS_FACILITY_TYPES.has(typeText) && !showStepsMarkers) ||
         (STATION_EXIT_FACILITY_TYPES.has(typeText) && !showStationExitMarkers) ||
-        (ELEVATOR_FACILITY_TYPES.has(typeText) && !showElevatorMarkers)
+        (ELEVATOR_FACILITY_TYPES.has(typeText) && !showElevatorMarkers) ||
+        (ESCALATOR_FACILITY_TYPES.has(typeText) && !showEscalatorMarkers) ||
+        (RAMP_FACILITY_TYPES.has(typeText) && !showRampMarkers)
       )
     })
 
@@ -401,6 +413,43 @@ function App() {
         coordinates: [segment.from, segment.to],
       },
     }))
+
+    const structureFeatures = (routeData.structures || []).map((structure) => ({
+      type: 'Feature',
+      properties: {
+        type: structure.type,
+        name: structure.name || (structure.type === 'bridge' ? '天橋' : '隧道'),
+      },
+      geometry: {
+        type: 'LineString',
+        coordinates: structure.coordinates,
+      },
+    }))
+
+    if (structureFeatures.length > 0) {
+      map.addSource(structureSourceId, {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features: structureFeatures,
+        },
+      })
+
+      map.addLayer({
+        id: structureLayerId,
+        type: 'line',
+        source: structureSourceId,
+        layout: {
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        paint: {
+          'line-color': ['match', ['get', 'type'], 'bridge', '#d97706', 'tunnel', '#0f766e', '#64748b'],
+          'line-width': 11,
+          'line-opacity': 0.45,
+        },
+      })
+    }
 
     map.addSource(sourceId, {
       type: 'geojson',
@@ -442,7 +491,7 @@ function App() {
     markersRef.current = [startMarker, endMarker]
 
     const obstacleFeatures = visibleFacilities
-      .filter((facility) => /ramp|obstacle|escalator|travelator|stairlift|crossing/i.test(facility.type || ''))
+      .filter((facility) => /obstacle|travelator|stairlift/i.test(facility.type || ''))
       .map((facility) => ({
         type: 'Feature',
         properties: {
@@ -493,6 +542,8 @@ function App() {
       const isStation = typeText === 'station'
       const isStationExit = !isStation && (typeText.includes('station') || typeText.includes('entrance') || typeText.includes('exit'))
       const isElevator = typeText.includes('elevator') || typeText.includes('lift')
+      const isEscalator = ESCALATOR_FACILITY_TYPES.has(typeText)
+      const isRamp = RAMP_FACILITY_TYPES.has(typeText)
       const obstacleLabel = getFacilityLabel(facility.type)
       const obstacleColor = getFacilityColor(facility.type)
       let markerOptions = { color: obstacleColor }
@@ -532,6 +583,18 @@ function App() {
         icon.src = `${liftMarkerIcon}?v=${FACILITY_ICON_VERSION}`
         icon.alt = facility.name || '升降機'
         icon.className = 'lift-marker-icon'
+        markerOptions = { element: icon, anchor: 'bottom' }
+      } else if (isEscalator) {
+        const icon = document.createElement('img')
+        icon.src = escalatorMarkerIcon
+        icon.alt = facility.name || '扶手電梯'
+        icon.className = 'escalator-marker-icon'
+        markerOptions = { element: icon, anchor: 'bottom' }
+      } else if (isRamp) {
+        const icon = document.createElement('img')
+        icon.src = rampMarkerIcon
+        icon.alt = facility.name || '斜坡'
+        icon.className = 'ramp-marker-icon'
         markerOptions = { element: icon, anchor: 'bottom' }
       }
 
@@ -591,7 +654,7 @@ function App() {
 
       markersRef.current.push(marker)
     })
-  }, [routeData, showToiletMarkers, showParkingMarkers, showStepsMarkers, showStationExitMarkers, showElevatorMarkers])
+  }, [routeData, showToiletMarkers, showParkingMarkers, showStepsMarkers, showStationExitMarkers, showElevatorMarkers, showEscalatorMarkers, showRampMarkers])
 
   const routeMetrics = useMemo(
     () => buildRouteMetrics(routeData?.route?.coordinates),
@@ -716,13 +779,15 @@ function App() {
   const handleRouteRequest = async () => {
     setLoading(true)
     setError('')
-    setStatus('')
+    setStatus('正在搜尋起點及終點…')
+    setRouteData(null)
 
     try {
       const [startLocation, endLocation] = await Promise.all([
         geocodeLocation(startInput, '起點'),
         geocodeLocation(endInput, '終點'),
       ])
+      setStatus('地點已確認；正在嘗試輪椅路線並核對 3DPN 行人網絡…')
 
       const response = await fetchWithTimeout(`${BACKEND_URL}/route`, {
         method: 'POST',
@@ -759,6 +824,7 @@ function App() {
 
   const maxSlope = routeData?.summary?.max_slope_deg ?? 0
   const facilityCount = routeData?.facilities?.length ?? 0
+  const isFallbackRoute = routeData?.route_source === 'fallback'
 
   return (
     <div className="app-shell">
@@ -796,7 +862,7 @@ function App() {
             onClick={startNavigation}
             disabled={!routeData || loading}
           >
-            導航開始
+            {isFallbackRoute ? '模擬直線備援' : '模擬路線'}
           </button>
         </div>
 
@@ -825,6 +891,11 @@ function App() {
                 {`無障礙路段 ${Math.round(routeData.summary.wheelchair_analysis.barrier_free_ratio * 100)}%（3DPN）`}
               </span>
             ) : null}
+            {routeData?.summary?.pedestrian_network ? (
+              <span className={`obstacle-badge ${routeData.summary.pedestrian_network.verified ? 'safe' : 'step'}`}>
+                {`3DPN 行人網絡匹配 ${Math.round(routeData.summary.pedestrian_network.match_ratio * 100)}%`}
+              </span>
+            ) : null}
           </div>
           {routeData?.warning ? <div className="alert info route-warning">{routeData.warning}</div> : null}
         </div>
@@ -835,6 +906,8 @@ function App() {
           <div className="legend-row"><span className="dot yellow" /> 中度坡度</div>
           <div className="legend-row"><span className="dot orange" /> 較陡坡度</div>
           <div className="legend-row"><span className="dot red" /> 極陡坡度</div>
+          <div className="legend-row"><span className="structure-line bridge" /> 3DPN 天橋</div>
+          <div className="legend-row"><span className="structure-line tunnel" /> 3DPN 隧道</div>
         </div>
 
         {error ? <div className="alert error">{error}</div> : null}
@@ -879,6 +952,20 @@ function App() {
             onClick={() => setShowElevatorMarkers((current) => !current)}
           >
             升降機
+          </button>
+          <button
+            type="button"
+            className={`facility-toggle-button${showEscalatorMarkers ? '' : ' is-off'}`}
+            onClick={() => setShowEscalatorMarkers((current) => !current)}
+          >
+            扶手電梯
+          </button>
+          <button
+            type="button"
+            className={`facility-toggle-button${showRampMarkers ? '' : ' is-off'}`}
+            onClick={() => setShowRampMarkers((current) => !current)}
+          >
+            斜坡
           </button>
         </div>
         {navActive && navInfo ? (

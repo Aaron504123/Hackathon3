@@ -1,0 +1,11 @@
+.git/
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+**/.pytest_cache/
+*.py[cod]
+test_*.py
+build_*.py
+data/

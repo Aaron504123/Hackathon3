@@ -17,16 +17,51 @@ def client():
 def test_choose_preferred_route_prefers_elevator_path():
     routes = [
         {"summary": {"distance": 120}, "geometry": {"coordinates": [[114.17, 22.32], [114.18, 22.33]]}},
-        {"summary": {"distance": 180}, "geometry": {"coordinates": [[114.17, 22.32], [114.175, 22.325], [114.18, 22.33]]}},
+        {"summary": {"distance": 180}, "geometry": {"coordinates": [[114.17, 22.32], [114.17, 22.33], [114.18, 22.33]]}},
     ]
     obstacles = [
         {"type": "steps", "name": "Main Stair", "longitude": 114.175, "latitude": 22.325},
-        {"type": "elevator", "name": "Lift A", "longitude": 114.176, "latitude": 22.326},
+        {"type": "elevator", "name": "Lift A", "longitude": 114.17, "latitude": 22.325},
     ]
 
     chosen = choose_preferred_route(routes, obstacles)
 
     assert chosen == routes[1]
+
+
+def test_choose_preferred_route_prefers_shorter_route_when_obstacles_match():
+    routes = [
+        {"summary": {"distance": 120}, "geometry": {"coordinates": [[114.17, 22.32], [114.18, 22.33]]}},
+        {"summary": {"distance": 180}, "geometry": {"coordinates": [[114.17, 22.32], [114.18, 22.33]]}},
+    ]
+
+    assert choose_preferred_route(routes, []) == routes[0]
+
+
+@pytest.mark.parametrize("start", ["114.17,22.32", [114.17], [181, 22.32], [114.17, "22.32"], [10 ** 400, 22.32]])
+def test_route_rejects_invalid_coordinates(client, start):
+    response = client.post("/route", json={"start": start, "end": [114.18, 22.33]})
+
+    assert response.status_code == 400
+    assert "valid [longitude, latitude]" in response.get_json()["error"]
+
+
+def test_route_rejects_non_object_json(client):
+    response = client.post("/route", data="not json", content_type="application/json")
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "A JSON object is required"
+
+
+def test_ors_route_request_has_short_timeout(monkeypatch):
+    response = Mock()
+    response.json.return_value = {"routes": []}
+    request = Mock(return_value=response)
+    monkeypatch.setattr(app_module.requests, "post", request)
+
+    app_module.query_ors_routes([114.17, 22.32], [114.18, 22.33])
+
+    assert request.call_args.kwargs["timeout"] == 8
 
 
 def test_route_geometry_polyline_is_decoded():
@@ -236,7 +271,11 @@ def test_map_keeps_all_barrierfree_and_limits_osm_to_100m_from_route():
     assert [facility["name"] for facility in visible] == ["BarrierFree toilet", "Near elevator"]
 
 
-def test_route_slopes(client):
+def test_route_slopes(client, monkeypatch):
+    monkeypatch.setattr(app_module, "validate_route_pedestrian_network", lambda coords, max_link_m: {
+        "verified": True, "match_ratio": 1.0, "matched_samples": 2,
+        "total_samples": 2, "max_distance_m": 1.0, "max_link_m": max_link_m,
+    })
     # 一般測試案例：市區內兩點
     response = client.post("/route", json={
         "start": [114.17, 22.32],
@@ -250,7 +289,11 @@ def test_route_slopes(client):
     # 檢查斜坡角度合理性
     assert all(-90 <= s <= 90 for s in slopes)
 
-def test_route_boundary(client):
+def test_route_boundary(client, monkeypatch):
+    monkeypatch.setattr(app_module, "validate_route_pedestrian_network", lambda coords, max_link_m: {
+        "verified": True, "match_ratio": 1.0, "matched_samples": 2,
+        "total_samples": 2, "max_distance_m": 1.0, "max_link_m": max_link_m,
+    })
     # 邊界測試案例：DEM 邊界附近兩點
     response = client.post("/route", json={
         "start": [114.20, 22.40],  # 接近 DEM 邊界
@@ -282,6 +325,10 @@ def test_route_keeps_ors_route_when_facility_api_fails(client, monkeypatch):
     # 隔離真實 3DPN 索引，保持此測試只驗證外部 API 失效情境
     monkeypatch.setattr(app_module, "fetch_pedestrian_facilities", lambda bbox: [])
     monkeypatch.setattr(app_module, "analyze_route_wheelchair", lambda coords, bbox: None)
+    monkeypatch.setattr(app_module, "validate_route_pedestrian_network", lambda coords, max_link_m: {
+        "verified": True, "match_ratio": 1.0, "matched_samples": 3,
+        "total_samples": 3, "max_distance_m": 1.0, "max_link_m": max_link_m,
+    })
 
     response = client.post("/route", json={
         "start": [114.17, 22.32],
@@ -291,7 +338,8 @@ def test_route_keeps_ors_route_when_facility_api_fails(client, monkeypatch):
     assert response.status_code == 200
     data = response.get_json()
     assert data["route_source"] == "openrouteservice"
-    assert data["warning"] is None
+    assert "3DPN 行人網絡" in data["warning"]
+    assert data["summary"]["pedestrian_network"]["verified"] is True
     barrier_fetch.assert_called_once()
     osm_fetch.assert_called_once()
 
@@ -354,6 +402,10 @@ def test_route_uses_mapbox_walking_when_ors_cannot_route(client, monkeypatch):
             "slope_deg": 1.0,
         }],
     )
+    monkeypatch.setattr(app_module, "validate_route_pedestrian_network", lambda coords, max_link_m: {
+        "verified": True, "match_ratio": 1.0, "matched_samples": 2,
+        "total_samples": 2, "max_distance_m": 1.0, "max_link_m": max_link_m,
+    })
 
     response = client.post("/route", json={"start": coordinates[0], "end": coordinates[-1]})
 
@@ -362,6 +414,69 @@ def test_route_uses_mapbox_walking_when_ors_cannot_route(client, monkeypatch):
     assert data["route_source"] == "mapbox_walking"
     assert data["route"]["coordinates"] == coordinates
     assert data["warning"]
+
+
+def test_route_returns_warning_for_unverified_pedestrian_network(client, monkeypatch):
+    coordinates = [[114.1762, 22.3365], [114.1735, 22.3359]]
+    monkeypatch.setattr(
+        app_module,
+        "query_ors_routes",
+        lambda start, end: (_ for _ in ()).throw(requests.HTTPError("ORS route unavailable")),
+    )
+    monkeypatch.setattr(app_module, "query_mapbox_route", lambda start, end: coordinates)
+    monkeypatch.setattr(app_module, "validate_route_pedestrian_network", lambda coords, max_link_m: {
+        "verified": False, "match_ratio": 0.96, "matched_samples": 96,
+        "total_samples": 100, "max_distance_m": 18.0, "max_link_m": max_link_m,
+    })
+
+    response = client.post("/route", json={"start": coordinates[0], "end": coordinates[-1]})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["summary"]["pedestrian_network"]["verified"] is False
+    assert data["summary"]["pedestrian_network"]["match_ratio"] == 0.96
+    assert data["route"]["coordinates"] == coordinates
+    assert "96%" in data["warning"]
+
+
+def test_route_returns_warned_straight_line_when_route_services_fail(client, monkeypatch):
+    monkeypatch.setattr(
+        app_module,
+        "query_ors_routes",
+        lambda start, end: (_ for _ in ()).throw(requests.ConnectionError("ORS unavailable")),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "query_mapbox_route",
+        lambda start, end: (_ for _ in ()).throw(requests.ConnectionError("Mapbox unavailable")),
+    )
+    monkeypatch.setattr(app_module, "validate_route_pedestrian_network", lambda coords, max_link_m: {
+        "verified": False, "match_ratio": 0.0, "matched_samples": 0,
+        "total_samples": 26, "max_distance_m": None, "max_link_m": max_link_m,
+    })
+    monkeypatch.setattr(
+        app_module, "sample_elevations",
+        lambda route, sample_distance_m: [(route[0][0], route[0][1], 10.0), (route[-1][0], route[-1][1], 12.0)],
+    )
+    monkeypatch.setattr(app_module, "smooth_elevations", lambda samples: samples)
+    monkeypatch.setattr(app_module, "compute_slopes", lambda samples: [{
+        "from": samples[0][:2], "to": samples[-1][:2], "distance_m": 100.0,
+        "dz_m": 2.0, "slope_deg": 1.0,
+    }])
+    monkeypatch.setattr(app_module, "query_pedestrian_structures", lambda bbox: [])
+    monkeypatch.setattr(app_module, "query_structure_ways", lambda bbox: [])
+    monkeypatch.setattr(app_module, "fetch_facilities_nearby", lambda bbox: [])
+    monkeypatch.setattr(app_module, "fetch_pedestrian_facilities", lambda bbox: [])
+    monkeypatch.setattr(app_module, "analyze_route_wheelchair", lambda coords, bbox: None)
+
+    response = client.post("/route", json={"start": [114.17, 22.32], "end": [114.18, 22.33]})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["route_source"] == "fallback"
+    assert len(data["route"]["coordinates"]) == 26
+    assert "直線備援" in data["warning"]
+    assert data["summary"]["pedestrian_network"]["verified"] is False
 
 
 def test_fetch_barrier_free_skips_placeholder_api_key(monkeypatch):

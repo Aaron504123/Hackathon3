@@ -9,6 +9,7 @@ from pedestrian_index import (
     merge_pedestrian_priority,
     query_pedestrian_segments,
     query_pedestrian_structures,
+    validate_route_pedestrian_network,
 )
 
 
@@ -24,6 +25,8 @@ def _build_test_index(path):
         (2, 10, 1, 2, 0.0, "測試街", LineString([(114.1702, 22.3202), (114.1703, 22.3203)])),  # 升降機
         (3, 2, 1, 2, 0.0, "天橋", LineString([(114.1704, 22.3204), (114.1708, 22.3204)])),      # 行人天橋
         (4, 1, 1, 2, 0.02, "測試街", LineString([(114.1700, 22.3200), (114.1710, 22.3200)])),   # 行人路
+        (5, 4, 1, 2, 0.0, "隧道", LineString([(114.1712, 22.3206), (114.1715, 22.3206)])),
+        (6, 7, 2, 1, 0.0, "車輛出入口", LineString([(114.1720, 22.3220), (114.1730, 22.3220)])),
     ]
     for route_id, feature_type, wa, wb, gradient, street, geom in samples:
         min_x, min_y, max_x, max_y = geom.bounds
@@ -48,10 +51,10 @@ def _build_test_index(path):
 def test_query_pedestrian_segments_and_facilities(tmp_path):
     index = tmp_path / "ped.sqlite3"
     _build_test_index(index)
-    bbox = (22.3199, 114.1699, 22.3205, 114.1711)
+    bbox = (22.3199, 114.1699, 22.3210, 114.1716)
 
     segments = query_pedestrian_segments(bbox, index)
-    assert len(segments) == 4
+    assert len(segments) == 5
 
     facilities = fetch_pedestrian_facilities(bbox, index)
     types = sorted(f["type"] for f in facilities)
@@ -59,9 +62,25 @@ def test_query_pedestrian_segments_and_facilities(tmp_path):
     assert all(f["source"] == "3dpn" for f in facilities)
 
     structures = query_pedestrian_structures(bbox, index)
-    assert len(structures) == 1
-    assert structures[0]["structure_type"] == "bridge"
-    assert len(structures[0]["coords"]) >= 2
+    assert {structure["structure_type"] for structure in structures} == {"bridge", "tunnel"}
+    assert all(len(structure["coords"]) >= 2 for structure in structures)
+
+
+def test_pedestrian_route_validation_rejects_vehicle_entrance(tmp_path):
+    index = tmp_path / "ped.sqlite3"
+    _build_test_index(index)
+
+    pedestrian_route = validate_route_pedestrian_network(
+        [[114.1700, 22.3200], [114.1710, 22.3200]], index_path=index,
+    )
+    vehicle_entrance_route = validate_route_pedestrian_network(
+        [[114.1720, 22.3220], [114.1730, 22.3220]], index_path=index,
+    )
+
+    assert pedestrian_route["verified"] is True
+    assert pedestrian_route["match_ratio"] == 1.0
+    assert vehicle_entrance_route["verified"] is False
+    assert vehicle_entrance_route["match_ratio"] == 0.0
 
 
 def test_merge_pedestrian_priority_dedupes_osm():

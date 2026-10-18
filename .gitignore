@@ -1,0 +1,14 @@
+.env
+
+# Python environments and generated files
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+**/.pytest_cache/
+*.py[cod]
+
+# Frontend generated files
+frontend/node_modules/
+frontend/dist/
