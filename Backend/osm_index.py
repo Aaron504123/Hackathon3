@@ -56,6 +56,8 @@ def _facility_type(tags):
         return "station_exit"
     if railway in {"subway_entrance", "station_entrance"}:
         return "station_exit"
+    if railway == "station":
+        return "station"
     if tags.get("elevator") == "yes" or tags.get("highway") == "elevator":
         return "elevator"
     if tags.get("highway") == "steps":

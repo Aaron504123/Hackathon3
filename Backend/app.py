@@ -5,10 +5,20 @@ import requests
 import polyline
 from concurrent.futures import ThreadPoolExecutor
 from geographiclib.geodesic import Geodesic
+from pyproj import Transformer
+from shapely import LineString
 
 from config import MAPBOX_TOKEN, ORS_API_KEY, ORS_API_BASE, ORS_PROFILE, SAMPLE_DISTANCE_M
 from dem_processing import sample_elevations, smooth_elevations, compute_slopes, correct_structural_elevations
 from osm_index import query_structure_ways
+from mtr_facilities import attach_mtr_barrier_free_info
+from pedestrian_index import (
+    analyze_route_wheelchair,
+    fetch_pedestrian_facilities,
+    merge_pedestrian_priority,
+    query_pedestrian_structures,
+    validate_route_pedestrian_network,
+)
 from facilities_fetcher import fetch_barrier_free, fetch_overpass, normalize
 
 app = Flask(__name__)
@@ -18,6 +28,8 @@ MAPBOX_URL = "https://api.mapbox.com/directions/v5/mapbox/walking"
 ORS_URL = f"{ORS_API_BASE}/v2/directions/{ORS_PROFILE}/json"
 FACILITY_ROUTE_RADIUS_METERS = 1000
 OSM_DISPLAY_ROUTE_RADIUS_METERS = 100
+PEDESTRIAN_NETWORK_MAX_LINK_METERS = 5
+_TO_METRIC = Transformer.from_crs("EPSG:4326", "EPSG:2326", always_xy=True)
 
 
 def build_fallback_route(start, end, steps=25):
@@ -37,6 +49,33 @@ def _distance_meters(coord_a, coord_b):
     lon1, lat1 = coord_a
     lon2, lat2 = coord_b
     return Geodesic.WGS84.Inverse(lat1, lon1, lat2, lon2)["s12"]
+
+
+def _structures_near_route(structures, route_coords, max_distance_meters=30):
+    if len(route_coords) < 2:
+        return []
+
+    route_line = LineString([
+        _TO_METRIC.transform(longitude, latitude)
+        for longitude, latitude in route_coords
+    ])
+    nearby = []
+    for structure in structures:
+        coordinates = structure.get("coords") or []
+        if len(coordinates) < 2:
+            continue
+        structure_line = LineString([
+            _TO_METRIC.transform(longitude, latitude)
+            for latitude, longitude in coordinates
+        ])
+        if structure_line.distance(route_line) > max_distance_meters:
+            continue
+        nearby.append({
+            "type": structure.get("structure_type"),
+            "name": structure.get("name", ""),
+            "coordinates": [[longitude, latitude] for latitude, longitude in coordinates],
+        })
+    return nearby
 
 
 def _distance_to_route(route_coords, point):
@@ -121,9 +160,13 @@ def choose_preferred_route(routes, obstacles):
     scored_routes = []
     for index, route in enumerate(routes):
         route_coords = normalize_route_geometry(route)
-        summary = route.get("summary", {})
-        distance = summary.get("distance") or len(route_coords) * 100
-        score = float(distance)
+        summary = route.get("summary") or {}
+        try:
+            distance = float(summary.get("distance", len(route_coords) * 100))
+        except (TypeError, ValueError):
+            distance = len(route_coords) * 100
+        if not math.isfinite(distance):
+            distance = len(route_coords) * 100
         has_steps = False
         has_elevator = False
 
@@ -132,21 +175,26 @@ def choose_preferred_route(routes, obstacles):
             proximity = _distance_to_route(route_coords, obstacle_point)
             obstacle_type = str(obstacle.get("type", "")).lower()
             if proximity <= 200 and ("elevator" in obstacle_type or "lift" in obstacle_type):
-                score += 10000
                 has_elevator = True
             elif proximity <= 120 and ("step" in obstacle_type or "stair" in obstacle_type):
-                score -= 1000
                 has_steps = True
 
-        if has_elevator and not has_steps:
-            score += 5000
-        elif has_steps:
-            score -= 2000
+        scored_routes.append((has_steps, not has_elevator, distance, index, route))
 
-        scored_routes.append((score, index, route))
+    scored_routes.sort(key=lambda item: item[:4])
+    return scored_routes[0][4]
 
-    scored_routes.sort(key=lambda item: item[0], reverse=True)
-    return scored_routes[0][2]
+
+def _is_valid_coordinate(value):
+    if not isinstance(value, list) or len(value) != 2:
+        return False
+    longitude, latitude = value
+    return (
+        all(isinstance(coordinate, (int, float)) and not isinstance(coordinate, bool)
+            for coordinate in value)
+        and -180 <= longitude <= 180
+        and -90 <= latitude <= 90
+    )
 
 
 def classify_route_obstacles(obstacles):
@@ -197,7 +245,7 @@ def query_ors_routes(start, end):
         "Accept": "application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8",
         "Content-Type": "application/json; charset=utf-8",
     }
-    response = requests.post(ORS_URL, json=body, headers=headers, timeout=20)
+    response = requests.post(ORS_URL, json=body, headers=headers, timeout=8)
     response.raise_for_status()
     return response.json()
 
@@ -243,16 +291,21 @@ def health():
 
 @app.route("/route", methods=["POST"])
 def route():
-    data = request.get_json() or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "A JSON object is required"}), 400
     start, end = data.get("start"), data.get("end")
-    if not start or not end:
+    if start is None or end is None:
         return jsonify({"error": "start/end required"}), 400
+    if not _is_valid_coordinate(start) or not _is_valid_coordinate(end):
+        return jsonify({"error": "start/end must be valid [longitude, latitude] coordinates"}), 400
 
     coords = build_fallback_route(start, end)
     route_source = "fallback"
     route_obstacles = []
     mapbox_failure = None
     fetched_facilities = None
+    structures = []
 
     try:
         ors_payload = query_ors_routes(start, end)
@@ -284,6 +337,27 @@ def route():
             route_source = "fallback"
             coords = build_fallback_route(start, end)
 
+    pedestrian_network = None
+    pedestrian_network = validate_route_pedestrian_network(
+        coords,
+        max_link_m=PEDESTRIAN_NETWORK_MAX_LINK_METERS,
+    )
+    if not pedestrian_network["verified"] and route_source == "openrouteservice":
+        try:
+            mapbox_coords = query_mapbox_route(start, end)
+            mapbox_network = validate_route_pedestrian_network(
+                mapbox_coords,
+                max_link_m=PEDESTRIAN_NETWORK_MAX_LINK_METERS,
+            )
+            if mapbox_network["match_ratio"] >= pedestrian_network["match_ratio"]:
+                coords = mapbox_coords
+                route_source = "mapbox_walking"
+                route_obstacles = []
+                fetched_facilities = None
+                pedestrian_network = mapbox_network
+        except Exception as mapbox_error:
+            logging.warning("Mapbox route unavailable after ORS route; keeping ORS candidate: %s", mapbox_error)
+
     # DEM slope calculation
     raw_samples = sample_elevations(coords, sample_distance_m=SAMPLE_DISTANCE_M)
     try:
@@ -295,7 +369,8 @@ def route():
             max(route_lats) + 0.001,
             max(route_lons) + 0.001,
         ]
-        structures = query_structure_ways(structure_bbox)
+        # 3DPN 官方行人天橋／隧道資料優先，OSM 結構作補充
+        structures = query_pedestrian_structures(structure_bbox) + query_structure_ways(structure_bbox)
         raw_samples, corrected_indices = correct_structural_elevations(raw_samples, structures)
         if corrected_indices:
             logging.info("Structural elevation correction applied to %d samples", len(corrected_indices))
@@ -318,8 +393,24 @@ def route():
     ]
     if fetched_facilities is None:
         fetched_facilities = fetch_facilities_nearby(bbox)
+    try:
+        # 3DPN 官方行人設施優先；去除 25 米內重複的 OSM 樓梯／升降機／斜道
+        pdpn_facilities = fetch_pedestrian_facilities(bbox)
+        if pdpn_facilities:
+            fetched_facilities = merge_pedestrian_priority(fetched_facilities, pdpn_facilities)
+    except Exception as pdpn_error:
+        logging.warning("3DPN facility merge skipped: %s", pdpn_error)
+    try:
+        wheelchair_analysis = analyze_route_wheelchair(coords, bbox)
+    except Exception as analysis_error:
+        logging.warning("3DPN wheelchair analysis skipped: %s", analysis_error)
+        wheelchair_analysis = None
     nearby_route_facilities = _filter_facilities_near_route(fetched_facilities, coords)
     facilities = _filter_facilities_for_map(fetched_facilities, coords)
+    try:
+        attach_mtr_barrier_free_info(facilities)
+    except Exception as mtr_error:
+        logging.warning("MTR barrier-free enrichment skipped: %s", mtr_error)
 
     route_facility_summary = classify_route_obstacles(facilities)
     max_slope = max([abs(s["slope_deg"]) for s in segments if s["slope_deg"] is not None], default=None)
@@ -336,11 +427,22 @@ def route():
     elif route_facility_summary["has_elevator_access"]:
         route_warning = "本路線可接近已標記升降機，較適合作為無障礙路線參考。"
 
+    if pedestrian_network["verified"]:
+        network_warning = "路線每 5 公尺採樣點均在 5 公尺內匹配 3DPN 行人網絡。"
+    else:
+        network_warning = (
+            f"3DPN 行人網絡匹配率 {round(pedestrian_network['match_ratio'] * 100)}%；"
+            "未匹配區段可能偏離已知步行道。"
+        )
+    network_warning += " 資料不含即時施工或封路資訊，不能保證現場狀況。"
+    route_warning = f"{route_warning} {network_warning}" if route_warning else network_warning
+
     return jsonify({
         "route": {"type": "LineString", "coordinates": coords},
         "elevations": elevations,
         "slopes": slopes,
         "segments": segments,
+        "structures": _structures_near_route(structures, coords),
         "facilities": facilities,
         "route_obstacles": route_facility_summary,
         "route_source": route_source,
@@ -351,6 +453,8 @@ def route():
             "has_step_obstacle": route_facility_summary["has_step_obstacle"],
             "has_elevator_access": route_facility_summary["has_elevator_access"],
             "nearby_route_facility_count": len(nearby_route_facilities),
+            "wheelchair_analysis": wheelchair_analysis,
+            "pedestrian_network": pedestrian_network,
         },
     })
 

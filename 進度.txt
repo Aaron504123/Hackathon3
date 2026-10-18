@@ -400,3 +400,73 @@ Barrier Free Map API説明:https://barrierfreemap.hk/open-data-api
 - 轉向提示由路線幾何推算，不是 Mapbox/ORS 的正式逐步導航指令；路口名稱不會顯示。
 - 模擬速度固定 5 m/s（`NAV_SPEED_MPS`），未與真實步行速度或 GPS 連動。
 - 綠點位置是模擬值，不是使用者實際定位。
+
+## 廿二、2026-10-17 CSDI 數據評估與港鐵官方無障礙設施整合
+
+### CSDI 平台評估
+
+- CSDI 空間數據共享平台（portal.csdi.gov.hk）目前有 1,154 個數據集，涵蓋地政總署、運輸署等多個部門。
+- 對本專案最有價值的數據：
+  1. **三維行人道路網（3D Pedestrian Network）**：地政總署官方可行走網絡，含行人天橋、隧道、過路處及 3D 樓層連接；可長遠取代 OSM 路網及我們自行實作的天橋高程修正。
+  2. **3D Pedestrian Route Search API**：官方室內外 3D 步行路線搜尋 API，政府示範應用「Walkin'HK」即建於其上。文件頁（portal.csdi.gov.hk/csdi-webpage/apidoc/3d-pedestrian-route-search）確認存在，但互動文件需同意條款後才能查看端點細節；使用需加 LandsD 標誌及版權聲明、有短時間大量請求限制、需 TLS 1.2+。後續若要取代 ORS/Mapbox，需先取得完整文件確認輪椅參數、認證方式與限額。
+  3. **港鐵無障礙設施 CSV**（data.gov.hk，每月更新）：已整合，見下。
+
+### 港鐵官方無障礙設施整合（已完成）
+
+- 下載並解析三個港鐵開放數據 CSV（存於 `Backend/data/`）：
+  - `mtr_barrier_free_facilities.csv`：各站每項設施 Y/N 及出入口文字（如「D、E 和 F 出口」）
+  - `mtr_barrier_free_category.csv`：設施代碼對照（AJ=出入口設施：同一層／斜道／升降機等；MJ=行動不便人士設施；VJ/HJ 等）
+  - `mtr_lines_and_stations.csv`：Station ID 對照中英文名
+- 原檔含 HTML 實體（如 `&#32171;`），載入時以 `html.unescape` 還原。
+- 新增 [Backend/mtr_facilities.py](Backend/mtr_facilities.py)：站名正規化比對 + 以 haversine 把 `station_exit` 連結到 500 公尺內最近的車站。
+- [Backend/osm_index.py](Backend/osm_index.py)：索引新增 `railway=station` 節點（全港 121 站）；已重建正式索引。
+- [Backend/app.py](Backend/app.py)：route response 的 station / station_exit 設施附上 `mtr_station_name` 及 `mtr_barrier_free` 欄位；失敗時只記警告。
+- 前端：新增藍色圓形「站」標記；車站／出入口彈窗顯示「港鐵官方無障礙設施」清單；「港鐵站」切換按鈕同時控制車站與出入口。
+
+### 驗證結果
+
+- Live API（九龍塘站 → 楊建文學術樓）：設施含 station 1 個（九龍塘），8 個站出入口全部連結到九龍塘站的官方設施資料。
+- 瀏覽器實測：點擊「站」標記彈窗正確列出「升降機 - 閘外區域（D、E 和 F 出口）」等 15 項設施。
+- 回歸測試 22 項全部通過（新增 2 項 MTR 比對／連結測試）。
+
+### 限制
+
+- 港鐵 CSV 無座標，車站位置依賴 OSM `railway=station` 節點；非港鐵車站（山頂纜車等）無法比對，會靜默略過。
+- 站名比對以中／英文完全吻合為主、包含式為輔；如 OSM 改名可能脫鉤。
+
+## 廿三、2026-10-17 三維行人道路網（3DPN）整合為最高優先數據源
+
+### 數據讀取
+
+- 使用者提供官方 FGDB（`3DPN_P2.gdb`，已複製到 `Backend/data/`）；主圖層 `PedestrianRoute` 共 **465,892** 條 3D 線段（EPSG:2326 + HKPD 高程）。
+- 代碼對照從官方 ArcGIS Feature Service（esrichinahk 託管）的 coded value domains 取得：FeatureType 1=Footway、2=Footbridge、4=Subway、8=Escalator、10=Lift、11=Ramp、12=Staircase、13=Stairlift、15–22=港鐵版本、23–26=公園/行人徑/鄉村/山徑、30–33=各類過路處；WheelchairAccess/Barrier 1=True、2=False；Location 1=Outdoor、2=Indoor。
+- 安裝 `pyogrio==0.13.0` 讀取 FGDB；已加入 requirements.txt。
+
+### 本地索引
+
+- 新增 [Backend/build_pedestrian_index.py](Backend/build_pedestrian_index.py)：分批（5 萬/批）讀取 GDB、2326→WGS84 轉換，輸出 `Backend/data/pedestrian-network.sqlite3`（WKB 幾何 + RTree 空間索引），465,892 段全部入庫。
+- 新增 [Backend/pedestrian_index.py](Backend/pedestrian_index.py)：bbox 查詢、結構提取、設施轉換、優先合併、路線輪椅分析。
+
+### 最高優先整合（[Backend/app.py](Backend/app.py)）
+
+1. **結構修正優先**：DEM 天橋/隧道高程修正先查 3DPN 行人天橋(2)/隧道(4)，OSM 結構作補充。
+2. **設施標記優先**：3DPN 的升降機/樓梯/斜道/扶手電梯/自動行人道/輪椅升降台/過路處轉為點位標記（source=3dpn）；OSM 同類障礙在 25 米內有 3DPN 對應時剔除，其餘保留補充。
+3. **輪椅可通行分析**：路線點以 STRtree 匹配最近 3DPN 段（15 米內），計算 `barrier_free_ratio`（非樓梯且無障礙物比例）、樓梯點數、障礙點數，加入 response `summary.wheelchair_analysis`。
+   - 注意：3DPN 的 WheelchairAccess=True 僅佔全網約 1%（連升降機也多標 False），屬稀疏調查值，不能直接用作可通行指標；故改用 barrier_free_ratio。
+   - 匹配率不足 30% 時回傳 None，避免誤導。
+
+### 前端
+
+- 新增 escalator（紫）、travelator（淡紫）、stairlift（橙）、crossing（青）標記及中文標籤。
+- 障礙面板新增徽章：「無障礙路段 XX%（3DPN）」（≥90% 綠色，否則紅色）。
+
+### 驗證結果
+
+- 九龍塘站 → 楊建文學術樓：3DPN 提供 114 個設施（過路處 46、扶手電梯 21、樓梯 32、升降機 9、斜道 7），OSM 去重後僅餘 10 個；匹配率 100%、barrier_free_ratio 100%。
+- 香港站 → 香港大學：匹配率 100%、barrier_free_ratio 97.9%，偵測到 3 個樓梯點、4 個障礙點；瀏覽器徽章顯示「無障礙路段 96%（3DPN）」。
+- 回歸測試 25 項全部通過（新增 3 項 3DPN 測試）；前端 build 通過。
+
+### 限制
+
+- 3DPN 無廁所/泊車位資料，該兩類仍以 Barrier Free Map 為唯一來源；站出入口仍以 OSM+MTR CSV 為準。
+- 路線仍由 ORS/Mapbox 提供，3DPN 暫用於設施、結構修正及可通行分析；未來可評估以 3DPN 自行建立輪椅路由。

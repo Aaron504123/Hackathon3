@@ -1,0 +1,37 @@
+services:
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+    environment:
+      MAPBOX_TOKEN: ${MAPBOX_TOKEN:-}
+      ORS_API_KEY: ${ORS_API_KEY:-}
+      ORS_PROFILE: ${ORS_PROFILE:-wheelchair}
+      BARRIER_FREE_API_KEY: ${BARRIER_FREE_API_KEY:-}
+      OSM_PBF_PATH: /data/hong-kong-261003.osm.pbf
+    volumes:
+      - ./Backend/data:/app/data:ro
+      - ./hong-kong-261003.osm.pbf:/data/hong-kong-261003.osm.pbf:ro
+    expose:
+      - "5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_MAPBOX_TOKEN: ${VITE_MAPBOX_TOKEN:-}
+        VITE_BACKEND_URL: /api
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
